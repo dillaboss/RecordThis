@@ -1,6 +1,6 @@
 # RecordThis
 
-A Windows 11 audio recorder built from the "EchoCapture" design spec (v2.0). It records either a microphone or **everything a playback device plays** (WASAPI loopback), writes audio straight to disk as it records, then lets you preview and save a standard WAV file.
+A Windows 11 audio recorder. It records either a microphone or **everything a playback device plays** (WASAPI loopback), writes audio straight to disk as it records, then lets you preview and save a standard WAV file.
 
 > **Status: untested.** This code was written without access to a Windows machine or the .NET SDK, so it has never been compiled or run. Expect a few build errors (most likely in XAML bindings) and treat all performance figures in the spec as unverified.
 
