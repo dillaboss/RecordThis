@@ -5,7 +5,7 @@
     xmlns:local="using:RecordThis.Views"
     xmlns:models="using:RecordThis.Models">
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled" VerticalScrollBarVisibility="Auto">
         <StackPanel MaxWidth="600" Padding="24,4,24,24" Spacing="16">
 
             <!-- Crash recovery: a spool from a previous session is still on disk -->

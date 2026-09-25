@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Microsoft.UI;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -40,9 +41,19 @@ public sealed partial class MainWindow : Window
 
         _captureView = new CaptureView(viewModel.Capture);
         _reviewView = new ReviewView(viewModel.Review);
+        ContentHost.Children.Add(_captureView);
+        ContentHost.Children.Add(_reviewView);
+
+        // Minimize / maximize / close glyphs follow the app theme (white in dark mode).
+        ApplyCaptionButtonColors();
+        RootGrid.ActualThemeChanged += (_, _) => ApplyCaptionButtonColors();
 
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
-        RootGrid.Loaded += (_, _) => _dialogs.XamlRoot = RootGrid.XamlRoot;
+        RootGrid.Loaded += (_, _) =>
+        {
+            _dialogs.XamlRoot = RootGrid.XamlRoot;
+            ApplyCaptionButtonColors();
+        };
         AppWindow.Closing += OnAppWindowClosing;
         Closed += (_, _) => _viewModel.Dispose();
 
@@ -63,8 +74,28 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void UpdateScreen() =>
-        ContentHost.Content = _viewModel.Screen == AppScreen.Review ? _reviewView : _captureView;
+    private void UpdateScreen()
+    {
+        bool review = _viewModel.Screen == AppScreen.Review;
+        _reviewView.Visibility = review ? Visibility.Visible : Visibility.Collapsed;
+        _captureView.Visibility = review ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void ApplyCaptionButtonColors()
+    {
+        bool dark = RootGrid.ActualTheme == ElementTheme.Dark;
+        byte shade = dark ? (byte)0xFF : (byte)0x00;
+        var titleBar = AppWindow.TitleBar;
+
+        titleBar.ButtonBackgroundColor = Colors.Transparent;
+        titleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
+        titleBar.ButtonForegroundColor = ColorHelper.FromArgb(0xFF, shade, shade, shade);
+        titleBar.ButtonHoverForegroundColor = ColorHelper.FromArgb(0xFF, shade, shade, shade);
+        titleBar.ButtonPressedForegroundColor = ColorHelper.FromArgb(0xFF, shade, shade, shade);
+        titleBar.ButtonInactiveForegroundColor = ColorHelper.FromArgb(0x80, shade, shade, shade);
+        titleBar.ButtonHoverBackgroundColor = ColorHelper.FromArgb(0x1A, shade, shade, shade);
+        titleBar.ButtonPressedBackgroundColor = ColorHelper.FromArgb(0x33, shade, shade, shade);
+    }
 
     private void UpdateTitle()
     {

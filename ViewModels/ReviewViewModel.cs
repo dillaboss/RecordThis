@@ -97,7 +97,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     private string _durationText = TimeFormat.Clock(TimeSpan.Zero);
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(PlayCommand), nameof(PauseCommand))]
+    [NotifyPropertyChangedFor(nameof(PlayPauseText), nameof(PlayPauseGlyph))]
     private bool _isPlaying;
 
     [ObservableProperty]
@@ -119,6 +119,11 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     private Notice? _notice;
 
     public string DiscardText => HasUnsavedRecording ? "Discard" : "New recording";
+
+    public string PlayPauseText => IsPlaying ? "Pause" : "Play";
+
+    /// <summary>Pause (E769) while playing, Play (E768) otherwise.</summary>
+    public string PlayPauseGlyph => IsPlaying ? "\uE769" : "\uE768";
 
     // ---------------------------------------------------------------- Session lifecycle
 
@@ -261,9 +266,21 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
 
     // ---------------------------------------------------------------- Playback
 
-    private bool CanPlay() => _session is not null && _playback.IsLoaded && !IsPlaying;
+    private bool CanPlayPause() => _session is not null && _playback.IsLoaded;
 
-    [RelayCommand(CanExecute = nameof(CanPlay))]
+    [RelayCommand(CanExecute = nameof(CanPlayPause))]
+    private void PlayPause()
+    {
+        if (IsPlaying)
+        {
+            Pause();
+        }
+        else
+        {
+            Play();
+        }
+    }
+
     private void Play()
     {
         try
@@ -282,7 +299,6 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         }
     }
 
-    [RelayCommand(CanExecute = nameof(IsPlaying))]
     private void Pause()
     {
         _playback.Pause();
@@ -432,8 +448,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
 
     private void NotifyCommands()
     {
-        PlayCommand.NotifyCanExecuteChanged();
-        PauseCommand.NotifyCanExecuteChanged();
+        PlayPauseCommand.NotifyCanExecuteChanged();
         SaveCommand.NotifyCanExecuteChanged();
         DiscardCommand.NotifyCanExecuteChanged();
     }
@@ -445,11 +460,6 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         if (DownmixMatrix.RequiresDownmix(format.Channels))
         {
             details += " · Exports as stereo (ITU-R BS.775 downmix)";
-        }
-
-        if (result.SilenceInjected >= TimeSpan.FromSeconds(1))
-        {
-            details += $" · {TimeFormat.Friendly(result.SilenceInjected)} of silence kept where nothing was playing";
         }
 
         return details;

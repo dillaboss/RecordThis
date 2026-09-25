@@ -19,14 +19,7 @@
             </StackPanel>
         </Grid>
 
-        <!-- Single-window state machine: CaptureView <-> ReviewView -->
-        <ContentControl x:Name="ContentHost" Grid.Row="1" IsTabStop="False"
-                        HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
-            <ContentControl.ContentTransitions>
-                <TransitionCollection>
-                    <ContentThemeTransition />
-                </TransitionCollection>
-            </ContentControl.ContentTransitions>
-        </ContentControl>
+        <!-- Single-window state machine: CaptureView <-> ReviewView (both live here; only one is visible) -->
+        <Grid x:Name="ContentHost" Grid.Row="1" />
     </Grid>
 </Window>
