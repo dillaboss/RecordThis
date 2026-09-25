@@ -31,10 +31,11 @@ public partial class App : Application
         var export = new AudioExportService();
         var dialogs = new DialogService();
         var picker = new FilePickerService(() => _window is null ? 0 : WindowNative.GetWindowHandle(_window));
+        var clipboard = new ClipboardService(() => _window is null ? 0 : WindowNative.GetWindowHandle(_window));
 
         // View models
         var captureVm = new CaptureViewModel(capture, devices, spools, power);
-        var reviewVm = new ReviewViewModel(export, spools, picker, dialogs);
+        var reviewVm = new ReviewViewModel(export, spools, picker, dialogs, clipboard);
         var mainVm = new MainViewModel(captureVm, reviewVm, capture, devices, power);
 
         _window = new MainWindow(mainVm, dialogs);

@@ -19,6 +19,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     private readonly SpoolFileManager _spools;
     private readonly IFilePickerService _picker;
     private readonly IDialogService _dialogs;
+    private readonly IClipboardService _clipboard;
     private readonly ReviewPlaybackService _playback = new();
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _positionTimer;
@@ -34,12 +35,14 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         AudioExportService export,
         SpoolFileManager spools,
         IFilePickerService picker,
-        IDialogService dialogs)
+        IDialogService dialogs,
+        IClipboardService clipboard)
     {
         _export = export;
         _spools = spools;
         _picker = picker;
         _dialogs = dialogs;
+        _clipboard = clipboard;
         _dispatcher = DispatcherQueue.GetForCurrentThread()
                       ?? throw new InvalidOperationException("ReviewViewModel must be created on the UI thread.");
 
@@ -101,7 +104,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     private bool _isPlaying;
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(SaveCommand), nameof(DiscardCommand))]
+    [NotifyCanExecuteChangedFor(nameof(SaveCommand), nameof(CopyCommand), nameof(DiscardCommand))]
     private bool _isExporting;
 
     /// <summary>Export progress, 0..100.</summary>
@@ -419,6 +422,75 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         }
     }
 
+    private bool CanCopy() => _session is not null && !IsExporting;
+
+    /// <summary>Encodes an MP3 into a scratch folder and puts it on the clipboard as a file, ready for Ctrl+V in a chat app.</summary>
+    [RelayCommand(CanExecute = nameof(CanCopy))]
+    private async Task CopyAsync()
+    {
+        if (_session is not { } session)
+        {
+            return;
+        }
+
+        if (IsPlaying)
+        {
+            Pause();
+        }
+
+        IsExporting = true;
+        ExportProgress = 0;
+        Notice = null;
+        var progress = new Progress<double>(p => ExportProgress = p * 100);
+        string baseName = $"RecordThis {session.StartedAt.LocalDateTime:yyyy-MM-dd HH.mm.ss}";
+        int sampleRate = SelectedSampleRate.Value;
+
+        try
+        {
+            if (_analysisTask is { } analysis)
+            {
+                await analysis;
+            }
+
+            string path;
+            string format;
+            try
+            {
+                path = _clipboard.CreateTempFilePath(baseName + ".mp3");
+                await _export.ExportMp3Async(session, _mixedPeak, sampleRate, path, progress, CancellationToken.None);
+                format = "MP3";
+            }
+            catch (Mp3EncoderUnavailableException)
+            {
+                // Windows "N" editions ship without the MP3 encoder: fall back to a 16-bit WAV.
+                path = _clipboard.CreateTempFilePath(baseName + ".wav");
+                await _export.ExportAsync(session, _mixedPeak, new ExportOptions(sampleRate, 16), path, progress, CancellationToken.None);
+                format = "WAV (this PC has no MP3 encoder)";
+            }
+
+            _clipboard.CopyFile(path);
+
+            Notice = new Notice(
+                "Copied to clipboard",
+                $"Press Ctrl+V in Discord, WhatsApp or any other app to paste it. {format}, {FormatSize(new FileInfo(path).Length)}.",
+                NoticeSeverity.Success);
+        }
+        catch (Exception ex)
+        {
+            Notice = new Notice(
+                "Couldn't copy the recording",
+                $"{AudioErrorTranslator.Describe(ex)} You can still use Save As instead.",
+                NoticeSeverity.Error);
+        }
+        finally
+        {
+            IsExporting = false;
+        }
+    }
+
+    private static string FormatSize(long bytes) =>
+        bytes >= 1024 * 1024 ? $"{bytes / (1024.0 * 1024):0.0} MB" : $"{Math.Max(1, bytes / 1024)} KB";
+
     private bool CanDiscard() => _session is not null && !IsExporting;
 
     [RelayCommand(CanExecute = nameof(CanDiscard))]
@@ -450,6 +522,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     {
         PlayPauseCommand.NotifyCanExecuteChanged();
         SaveCommand.NotifyCanExecuteChanged();
+        CopyCommand.NotifyCanExecuteChanged();
         DiscardCommand.NotifyCanExecuteChanged();
     }
 

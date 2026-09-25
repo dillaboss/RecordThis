@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
+using NAudio.MediaFoundation;
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 using RecordThis.Models;
 using RecordThis.Services.Audio.Pipeline;
 
@@ -8,6 +10,9 @@ namespace RecordThis.Services.Audio;
 public sealed record ExportOptions(int SampleRate, int BitDepth);
 
 public sealed record ExportResult(string FilePath, TimeSpan Duration, double GainDb, bool Downmixed, bool Resampled);
+
+/// <summary>This copy of Windows has no MP3 encoder (e.g. an "N" edition without the Media Feature Pack).</summary>
+public sealed class Mp3EncoderUnavailableException() : Exception("This PC doesn't have an MP3 encoder installed.");
 
 /// <summary>
 /// Finalization stage: spool → ITU-R BS.775 downmix → clip-safe gain → WdlResampler →
@@ -128,6 +133,95 @@ public sealed class AudioExportService
             GainDb: gain < 1f ? 20 * Math.Log10(gain) : 0,
             Downmixed: downmix.IsDownmixing,
             Resampled: resampler.IsResampling);
+    }
+
+    /// <summary>
+    /// Same pipeline as <see cref="ExportAsync"/> (downmix, clip-safe gain, resample), then
+    /// 16-bit PCM into Windows' Media Foundation MP3 encoder. Small enough to share in chat apps:
+    /// 192 kbps is about 1.4 MB per minute.
+    /// </summary>
+    public Task<ExportResult> ExportMp3Async(
+        SpoolSession session,
+        float mixedPeak,
+        int sampleRate,
+        string destinationPath,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken) =>
+        Task.Run(() => ExportMp3(session, mixedPeak, sampleRate, destinationPath, progress, cancellationToken), cancellationToken);
+
+    private const int Mp3BitRate = 192_000;
+
+    private static ExportResult ExportMp3(
+        SpoolSession session,
+        float mixedPeak,
+        int sampleRate,
+        string destinationPath,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken)
+    {
+        MediaFoundationApi.Startup();
+
+        float gain = ClipSafeGain(mixedPeak);
+        using var spool = new SpoolSampleProvider(session);
+        var downmix = new DownmixSampleProvider(spool, session.Format.ChannelMask) { Gain = gain };
+        var resampler = new ExactLengthResampler(downmix, sampleRate, spool.TotalFrames);
+        var pcm16 = new SampleToWaveProvider16(resampler);
+
+        if (MediaFoundationEncoder.SelectMediaType(AudioSubtypes.MFAudioFormat_MP3, pcm16.WaveFormat, Mp3BitRate) is null)
+        {
+            throw new Mp3EncoderUnavailableException();
+        }
+
+        long totalBytes = resampler.ExpectedFrames * pcm16.WaveFormat.BlockAlign;
+        var tracked = new ProgressWaveProvider(pcm16, totalBytes, progress, cancellationToken);
+
+        try
+        {
+            // Media Foundation picks the container from the file extension, so write straight to the .mp3 path.
+            MediaFoundationEncoder.EncodeToMp3(tracked, destinationPath, Mp3BitRate);
+        }
+        catch
+        {
+            TryDelete(destinationPath);
+            throw;
+        }
+
+        progress?.Report(1.0);
+        return new ExportResult(
+            destinationPath,
+            TimeSpan.FromSeconds((double)resampler.ExpectedFrames / sampleRate),
+            GainDb: gain < 1f ? 20 * Math.Log10(gain) : 0,
+            Downmixed: downmix.IsDownmixing,
+            Resampled: resampler.IsResampling);
+    }
+
+    /// <summary>Pass-through that reports progress and honours cancellation while the encoder pulls audio.</summary>
+    private sealed class ProgressWaveProvider(
+        IWaveProvider source,
+        long totalBytes,
+        IProgress<double>? progress,
+        CancellationToken cancellationToken) : IWaveProvider
+    {
+        private long _read;
+        private int _lastPercent = -1;
+
+        public WaveFormat WaveFormat => source.WaveFormat;
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int read = source.Read(buffer, offset, count);
+            _read += read;
+
+            int percent = (int)(_read * 100 / Math.Max(1, totalBytes));
+            if (percent != _lastPercent)
+            {
+                _lastPercent = percent;
+                progress?.Report(Math.Min(1.0, percent / 100.0));
+            }
+
+            return read;
+        }
     }
 
     private static void TryDelete(string path)
