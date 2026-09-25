@@ -107,7 +107,10 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
     private string _modeText = string.Empty;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasNotice))]
     private Notice? _notice;
+
+    public bool HasNotice => Notice is not null;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(RecoveryText))]

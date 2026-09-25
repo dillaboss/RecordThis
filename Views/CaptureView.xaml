@@ -32,8 +32,8 @@
             <!-- Errors and status (device lost, exclusive mode, privacy, ...) -->
             <InfoBar
                 Closed="OnNoticeClosed"
-                IsOpen="{x:Bind local:XBind.IsNotNull(ViewModel.Notice), Mode=OneWay}"
-                Visibility="{x:Bind local:XBind.VisibleIfNotNull(ViewModel.Notice), Mode=OneWay}"
+                IsOpen="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
+                Visibility="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
                 Message="{x:Bind local:XBind.NoticeMessage(ViewModel.Notice), Mode=OneWay}"
                 Severity="{x:Bind local:XBind.Severity(ViewModel.Notice), Mode=OneWay}"
                 Title="{x:Bind local:XBind.NoticeTitle(ViewModel.Notice), Mode=OneWay}">

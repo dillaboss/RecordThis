@@ -23,4 +23,8 @@ public sealed record Notice(
     NoticeSeverity Severity,
     NoticeAction Action = NoticeAction.None,
     string? ActionText = null,
-    string? ActionArgument = null);
+    string? ActionArgument = null)
+{
+    /// <summary>If set, the notice removes itself after this long.</summary>
+    public TimeSpan? Lifetime { get; init; }
+}

@@ -23,6 +23,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     private readonly ReviewPlaybackService _playback = new();
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _positionTimer;
+    private readonly DispatcherQueueTimer _noticeTimer;
 
     private SpoolSession? _session;
     private IDisposable? _hold;
@@ -49,6 +50,10 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         _positionTimer = _dispatcher.CreateTimer();
         _positionTimer.Interval = PositionInterval;
         _positionTimer.Tick += (_, _) => UpdatePosition();
+
+        _noticeTimer = _dispatcher.CreateTimer();
+        _noticeTimer.IsRepeating = false;
+        _noticeTimer.Tick += (_, _) => Notice = null;
 
         _playback.PlaybackStopped += OnPlaybackStopped;
 
@@ -119,7 +124,21 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     private bool _hasUnsavedRecording;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasNotice))]
     private Notice? _notice;
+
+    public bool HasNotice => Notice is not null;
+
+    partial void OnNoticeChanged(Notice? value)
+    {
+        // Any new notice (or none) cancels a pending auto-dismiss; short-lived ones start a fresh countdown.
+        _noticeTimer.Stop();
+        if (value?.Lifetime is { } lifetime)
+        {
+            _noticeTimer.Interval = lifetime;
+            _noticeTimer.Start();
+        }
+    }
 
     public string DiscardText => HasUnsavedRecording ? "Discard" : "New recording";
 
@@ -454,6 +473,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
 
             string path;
             string format;
+            string? note = null;
             try
             {
                 path = _clipboard.CreateTempFilePath(baseName + ".mp3");
@@ -465,15 +485,19 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
                 // Windows "N" editions ship without the MP3 encoder: fall back to a 16-bit WAV.
                 path = _clipboard.CreateTempFilePath(baseName + ".wav");
                 await _export.ExportAsync(session, _mixedPeak, new ExportOptions(sampleRate, 16), path, progress, CancellationToken.None);
-                format = "WAV (this PC has no MP3 encoder)";
+                format = "WAV";
+                note = "This PC has no MP3 encoder, so a WAV was copied instead.";
             }
 
             _clipboard.CopyFile(path);
 
             Notice = new Notice(
-                "Copied to clipboard",
-                $"Press Ctrl+V in Discord, WhatsApp or any other app to paste it. {format}, {FormatSize(new FileInfo(path).Length)}.",
-                NoticeSeverity.Success);
+                $"Copied to clipboard as {FormatSize(new FileInfo(path).Length)} {format}",
+                note ?? string.Empty,
+                NoticeSeverity.Success)
+            {
+                Lifetime = TimeSpan.FromSeconds(5),
+            };
         }
         catch (Exception ex)
         {
@@ -571,6 +595,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         }
 
         _disposed = true;
+        _noticeTimer.Stop();
         _playback.PlaybackStopped -= OnPlaybackStopped;
 
         // An unsaved spool is deliberately left on disk so it's offered for recovery next launch.

@@ -14,20 +14,6 @@
     <ScrollViewer HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled" VerticalScrollBarVisibility="Auto">
         <StackPanel MaxWidth="600" Padding="24,4,24,24" Spacing="16">
 
-            <InfoBar
-                Closed="OnNoticeClosed"
-                IsOpen="{x:Bind local:XBind.IsNotNull(ViewModel.Notice), Mode=OneWay}"
-                Visibility="{x:Bind local:XBind.VisibleIfNotNull(ViewModel.Notice), Mode=OneWay}"
-                Message="{x:Bind local:XBind.NoticeMessage(ViewModel.Notice), Mode=OneWay}"
-                Severity="{x:Bind local:XBind.Severity(ViewModel.Notice), Mode=OneWay}"
-                Title="{x:Bind local:XBind.NoticeTitle(ViewModel.Notice), Mode=OneWay}">
-                <InfoBar.ActionButton>
-                    <Button Command="{x:Bind ViewModel.RunNoticeActionCommand}"
-                            Content="{x:Bind local:XBind.NoticeActionText(ViewModel.Notice), Mode=OneWay}"
-                            Visibility="{x:Bind local:XBind.HasAction(ViewModel.Notice), Mode=OneWay}" />
-                </InfoBar.ActionButton>
-            </InfoBar>
-
             <!-- Playback preview -->
             <Border Padding="20"
                     Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
@@ -151,6 +137,21 @@
                     </Grid>
                 </StackPanel>
             </Border>
+
+            <!-- Status: copy/save results, recording warnings -->
+            <InfoBar
+                Closed="OnNoticeClosed"
+                IsOpen="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
+                Visibility="{x:Bind ViewModel.HasNotice, Mode=OneWay}"
+                Message="{x:Bind local:XBind.NoticeMessage(ViewModel.Notice), Mode=OneWay}"
+                Severity="{x:Bind local:XBind.Severity(ViewModel.Notice), Mode=OneWay}"
+                Title="{x:Bind local:XBind.NoticeTitle(ViewModel.Notice), Mode=OneWay}">
+                <InfoBar.ActionButton>
+                    <Button Command="{x:Bind ViewModel.RunNoticeActionCommand}"
+                            Content="{x:Bind local:XBind.NoticeActionText(ViewModel.Notice), Mode=OneWay}"
+                            Visibility="{x:Bind local:XBind.HasAction(ViewModel.Notice), Mode=OneWay}" />
+                </InfoBar.ActionButton>
+            </InfoBar>
         </StackPanel>
     </ScrollViewer>
 </UserControl>
