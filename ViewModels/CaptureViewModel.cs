@@ -444,7 +444,7 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
     // ---------------------------------------------------------------- Notices
 
     [RelayCommand]
-    private void NoticeAction() => ShellLauncher.Run(Notice);
+    private void RunNoticeAction() => ShellLauncher.Run(Notice);
 
     public void Dispose()
     {

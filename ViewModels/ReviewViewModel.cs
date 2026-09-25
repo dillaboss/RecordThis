@@ -426,7 +426,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void NoticeAction() => ShellLauncher.Run(Notice);
+    private void RunNoticeAction() => ShellLauncher.Run(Notice);
 
     // ---------------------------------------------------------------- Helpers
 

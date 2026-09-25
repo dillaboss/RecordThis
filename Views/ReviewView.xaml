@@ -21,7 +21,7 @@
                 Severity="{x:Bind local:XBind.Severity(ViewModel.Notice), Mode=OneWay}"
                 Title="{x:Bind local:XBind.NoticeTitle(ViewModel.Notice), Mode=OneWay}">
                 <InfoBar.ActionButton>
-                    <Button Command="{x:Bind ViewModel.NoticeActionCommand}"
+                    <Button Command="{x:Bind ViewModel.RunNoticeActionCommand}"
                             Content="{x:Bind local:XBind.NoticeActionText(ViewModel.Notice), Mode=OneWay}"
                             Visibility="{x:Bind local:XBind.HasAction(ViewModel.Notice), Mode=OneWay}" />
                 </InfoBar.ActionButton>
