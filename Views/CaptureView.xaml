@@ -5,14 +5,19 @@
     xmlns:local="using:RecordThis.Views"
     xmlns:models="using:RecordThis.Models">
 
-    <ScrollViewer HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled" VerticalScrollBarVisibility="Auto">
-        <StackPanel MaxWidth="600" Padding="24,4,24,24" Spacing="16">
+    <!--
+        Content is pinned to the window with fixed margins (no centring, no scroll viewer), and nothing
+        on this screen changes size when recording starts, so the layout can't drift sideways.
+    -->
+    <Grid Padding="24,4,24,24">
+        <StackPanel VerticalAlignment="Top" Spacing="16">
 
             <!-- Crash recovery: a spool from a previous session is still on disk -->
             <InfoBar
                 Title="Unsaved recording found"
                 IsClosable="False"
                 IsOpen="{x:Bind local:XBind.IsNotNull(ViewModel.PendingRecovery), Mode=OneWay}"
+                Visibility="{x:Bind local:XBind.VisibleIfNotNull(ViewModel.PendingRecovery), Mode=OneWay}"
                 Message="{x:Bind ViewModel.RecoveryText, Mode=OneWay}"
                 Severity="Warning">
                 <InfoBar.Content>
@@ -28,6 +33,7 @@
             <InfoBar
                 Closed="OnNoticeClosed"
                 IsOpen="{x:Bind local:XBind.IsNotNull(ViewModel.Notice), Mode=OneWay}"
+                Visibility="{x:Bind local:XBind.VisibleIfNotNull(ViewModel.Notice), Mode=OneWay}"
                 Message="{x:Bind local:XBind.NoticeMessage(ViewModel.Notice), Mode=OneWay}"
                 Severity="{x:Bind local:XBind.Severity(ViewModel.Notice), Mode=OneWay}"
                 Title="{x:Bind local:XBind.NoticeTitle(ViewModel.Notice), Mode=OneWay}">
@@ -67,7 +73,8 @@
                                         <TextBlock Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
                                         <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                                    Style="{StaticResource CaptionTextBlockStyle}"
-                                                   Text="{x:Bind Subtitle}" />
+                                                   Text="{x:Bind Subtitle}"
+                                                   TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
                                 </Grid>
                             </DataTemplate>
@@ -143,11 +150,11 @@
 
             <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                        Style="{StaticResource CaptionTextBlockStyle}"
-                       TextWrapping="WrapWholeWords"
-                       Visibility="{x:Bind ViewModel.IsIdle, Mode=OneWay}">
+                       Opacity="{x:Bind local:XBind.OpaqueIf(ViewModel.IsIdle), Mode=OneWay}"
+                       TextWrapping="WrapWholeWords">
                 Pick speakers or headphones to record everything your PC plays, or a microphone to record your voice.
                 Audio is written straight to disk as you record, so long sessions are safe.
             </TextBlock>
         </StackPanel>
-    </ScrollViewer>
+    </Grid>
 </UserControl>

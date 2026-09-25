@@ -17,6 +17,8 @@ public static class XBind
 
     public static Visibility CollapsedIf(bool value) => value ? Visibility.Collapsed : Visibility.Visible;
 
+    public static double OpaqueIf(bool value) => value ? 1.0 : 0.0;
+
     public static InfoBarSeverity Severity(Notice? notice) => notice?.Severity switch
     {
         NoticeSeverity.Success => InfoBarSeverity.Success,
