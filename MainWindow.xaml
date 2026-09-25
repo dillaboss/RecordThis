@@ -1,0 +1,32 @@
+<Window
+    x:Class="RecordThis.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid x:Name="RootGrid">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Custom title bar (content extends into the Mica Alt caption area) -->
+        <Grid x:Name="AppTitleBar" Padding="16,0,0,0">
+            <StackPanel VerticalAlignment="Center" Orientation="Horizontal" Spacing="12">
+                <FontIcon x:Name="TitleIcon" FontSize="16" Glyph="&#xE720;"
+                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                <TextBlock x:Name="TitleText" VerticalAlignment="Center"
+                           Style="{StaticResource CaptionTextBlockStyle}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- Single-window state machine: CaptureView <-> ReviewView -->
+        <ContentControl x:Name="ContentHost" Grid.Row="1" IsTabStop="False"
+                        HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+            <ContentControl.ContentTransitions>
+                <TransitionCollection>
+                    <ContentThemeTransition />
+                </TransitionCollection>
+            </ContentControl.ContentTransitions>
+        </ContentControl>
+    </Grid>
+</Window>

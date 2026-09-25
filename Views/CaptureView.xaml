@@ -1,0 +1,153 @@
+<UserControl
+    x:Class="RecordThis.Views.CaptureView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:RecordThis.Views"
+    xmlns:models="using:RecordThis.Models">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel MaxWidth="600" Padding="24,4,24,24" Spacing="16">
+
+            <!-- Crash recovery: a spool from a previous session is still on disk -->
+            <InfoBar
+                Title="Unsaved recording found"
+                IsClosable="False"
+                IsOpen="{x:Bind local:XBind.IsNotNull(ViewModel.PendingRecovery), Mode=OneWay}"
+                Message="{x:Bind ViewModel.RecoveryText, Mode=OneWay}"
+                Severity="Warning">
+                <InfoBar.Content>
+                    <StackPanel Margin="0,0,0,12" Orientation="Horizontal" Spacing="8">
+                        <Button Command="{x:Bind ViewModel.RecoverCommand}" Content="Recover it"
+                                Style="{StaticResource AccentButtonStyle}" />
+                        <Button Command="{x:Bind ViewModel.DiscardRecoveryCommand}" Content="Delete it" />
+                    </StackPanel>
+                </InfoBar.Content>
+            </InfoBar>
+
+            <!-- Errors and status (device lost, exclusive mode, privacy, ...) -->
+            <InfoBar
+                Closed="OnNoticeClosed"
+                IsOpen="{x:Bind local:XBind.IsNotNull(ViewModel.Notice), Mode=OneWay}"
+                Message="{x:Bind local:XBind.NoticeMessage(ViewModel.Notice), Mode=OneWay}"
+                Severity="{x:Bind local:XBind.Severity(ViewModel.Notice), Mode=OneWay}"
+                Title="{x:Bind local:XBind.NoticeTitle(ViewModel.Notice), Mode=OneWay}">
+                <InfoBar.ActionButton>
+                    <Button Command="{x:Bind ViewModel.NoticeActionCommand}"
+                            Content="{x:Bind local:XBind.NoticeActionText(ViewModel.Notice), Mode=OneWay}"
+                            Visibility="{x:Bind local:XBind.HasAction(ViewModel.Notice), Mode=OneWay}" />
+                </InfoBar.ActionButton>
+            </InfoBar>
+
+            <Border Padding="20"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                <StackPanel Spacing="20">
+
+                    <!-- Source selector -->
+                    <ComboBox
+                        x:Name="SourceCombo"
+                        HorizontalAlignment="Stretch"
+                        Header="Audio input / output source"
+                        IsEnabled="{x:Bind ViewModel.CanChangeDevice, Mode=OneWay}"
+                        ItemsSource="{x:Bind ViewModel.Devices}"
+                        PlaceholderText="No audio devices found"
+                        SelectedItem="{x:Bind ViewModel.SelectedDevice, Mode=OneWay}"
+                        SelectionChanged="OnSourceSelectionChanged">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate x:DataType="models:AudioDeviceModel">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <FontIcon VerticalAlignment="Center" FontSize="16" Glyph="{x:Bind Glyph}" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                                   Text="{x:Bind Subtitle}" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+
+                    <!-- Live level meter -->
+                    <StackPanel Spacing="8">
+                        <Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="Live level:" />
+                                <TextBlock AutomationProperties.LiveSetting="Off"
+                                           Typography.NumeralAlignment="Tabular"
+                                           Style="{StaticResource BodyStrongTextBlockStyle}"
+                                           Text="{x:Bind ViewModel.LevelText, Mode=OneWay}" />
+                                <TextBlock Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                                           Style="{StaticResource BodyStrongTextBlockStyle}"
+                                           Text="CLIP"
+                                           Visibility="{x:Bind ViewModel.IsClipping, Mode=OneWay}" />
+                            </StackPanel>
+                            <TextBlock HorizontalAlignment="Right"
+                                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                       Style="{StaticResource BodyStrongTextBlockStyle}"
+                                       Text="{x:Bind ViewModel.ModeText, Mode=OneWay}" />
+                        </Grid>
+
+                        <Grid Height="10" AutomationProperties.Name="Live input level" CornerRadius="5">
+                            <Rectangle>
+                                <Rectangle.Fill>
+                                    <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
+                                        <GradientStop Offset="0" Color="#FF2EA043" />
+                                        <GradientStop Offset="0.7" Color="#FF2EA043" />
+                                        <GradientStop Offset="0.85" Color="#FFE3B341" />
+                                        <GradientStop Offset="1" Color="#FFE5484D" />
+                                    </LinearGradientBrush>
+                                </Rectangle.Fill>
+                            </Rectangle>
+                            <!-- Mask shrinks from the right as the level rises, so the gradient stays anchored to dBFS -->
+                            <Rectangle Fill="{ThemeResource SolidBackgroundFillColorTertiaryBrush}" RenderTransformOrigin="1,0.5">
+                                <Rectangle.RenderTransform>
+                                    <ScaleTransform ScaleX="{x:Bind ViewModel.MeterMask, Mode=OneWay}" />
+                                </Rectangle.RenderTransform>
+                            </Rectangle>
+                        </Grid>
+
+                        <Grid>
+                            <TextBlock Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                       Style="{StaticResource CaptionTextBlockStyle}" Text="-60 dB" />
+                            <TextBlock HorizontalAlignment="Right"
+                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                       Style="{StaticResource CaptionTextBlockStyle}" Text="0 dBFS" />
+                        </Grid>
+
+                        <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Style="{StaticResource CaptionTextBlockStyle}"
+                                   Text="{x:Bind ViewModel.FormatText, Mode=OneWay}" />
+                    </StackPanel>
+
+                    <!-- Start / stop -->
+                    <Button HorizontalAlignment="Stretch"
+                            MinHeight="48"
+                            AutomationProperties.Name="{x:Bind ViewModel.RecordButtonText, Mode=OneWay}"
+                            Command="{x:Bind ViewModel.ToggleRecordingCommand}"
+                            Style="{StaticResource AccentButtonStyle}">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <FontIcon FontSize="16" Glyph="{x:Bind local:XBind.RecordGlyph(ViewModel.IsRecording), Mode=OneWay}" />
+                            <TextBlock Typography.NumeralAlignment="Tabular" Style="{StaticResource BodyStrongTextBlockStyle}"
+                                       Text="{x:Bind ViewModel.RecordButtonText, Mode=OneWay}" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       Style="{StaticResource CaptionTextBlockStyle}"
+                       TextWrapping="WrapWholeWords"
+                       Visibility="{x:Bind ViewModel.IsIdle, Mode=OneWay}">
+                Pick speakers or headphones to record everything your PC plays, or a microphone to record your voice.
+                Audio is written straight to disk as you record, so long sessions are safe.
+            </TextBlock>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
