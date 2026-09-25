@@ -1,0 +1,54 @@
+name: Build RecordThis
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            platform: x64
+          - rid: win-arm64
+            platform: ARM64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Works whether the files sit at the top of the repo or inside a RecordThis folder
+      - name: Find project
+        id: proj
+        shell: pwsh
+        run: |
+          $p = Get-ChildItem -Recurse -Filter RecordThis.csproj | Select-Object -First 1
+          if (-not $p) { throw "RecordThis.csproj not found. Check that the project files were uploaded." }
+          "path=$($p.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Publish single-file EXE
+        id: single
+        continue-on-error: true
+        run: dotnet publish "${{ steps.proj.outputs.path }}" -c Release -r ${{ matrix.rid }} -p:Platform=${{ matrix.platform }} -o out/single
+
+      - name: Upload single-file EXE
+        if: steps.single.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: RecordThis-${{ matrix.rid }}
+          path: out/single/RecordThis.exe
+
+      - name: Publish folder version
+        run: dotnet publish "${{ steps.proj.outputs.path }}" -c Release -r ${{ matrix.rid }} -p:Platform=${{ matrix.platform }} -p:PublishSingleFile=false -o out/folder
+
+      - name: Upload folder version
+        uses: actions/upload-artifact@v4
+        with:
+          name: RecordThis-${{ matrix.rid }}-folder
+          path: out/folder
