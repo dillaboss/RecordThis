@@ -10,10 +10,18 @@ using Windows.System;
 
 namespace RecordThis.Views;
 
-/// <summary>Peak-envelope waveform with a playhead. Click or drag to scrub; arrow keys step 5 %.</summary>
+/// <summary>
+/// Peak-envelope waveform with a playhead and trim handles. Click or drag the body to scrub; drag a
+/// bracket to trim. Keyboard: arrows seek 5 %, Home jumps to the start, [ and ] set the trim points
+/// at the playhead.
+/// </summary>
 public sealed partial class WaveformView : UserControl
 {
     private const double KeyboardStep = 0.05;
+    private const double HandleWidth = 10;
+    private const double HandleGrabDistance = 12;
+    private const VirtualKey OpenBracketKey = (VirtualKey)219;  // VK_OEM_4
+    private const VirtualKey CloseBracketKey = (VirtualKey)221; // VK_OEM_6
 
     public static readonly DependencyProperty WaveformProperty = DependencyProperty.Register(
         nameof(Waveform), typeof(object), typeof(WaveformView),
@@ -26,12 +34,34 @@ public sealed partial class WaveformView : UserControl
     public static readonly DependencyProperty SeekCommandProperty = DependencyProperty.Register(
         nameof(SeekCommand), typeof(ICommand), typeof(WaveformView), new PropertyMetadata(null));
 
-    private bool _scrubbing;
+    public static readonly DependencyProperty TrimStartProperty = DependencyProperty.Register(
+        nameof(TrimStart), typeof(double), typeof(WaveformView),
+        new PropertyMetadata(0.0, (d, _) => ((WaveformView)d).UpdateTrimVisuals()));
+
+    public static readonly DependencyProperty TrimEndProperty = DependencyProperty.Register(
+        nameof(TrimEnd), typeof(double), typeof(WaveformView),
+        new PropertyMetadata(1.0, (d, _) => ((WaveformView)d).UpdateTrimVisuals()));
+
+    public static readonly DependencyProperty MinimumSelectionProperty = DependencyProperty.Register(
+        nameof(MinimumSelection), typeof(double), typeof(WaveformView), new PropertyMetadata(0.01));
+
+    private static readonly InputCursor ResizeCursor = InputSystemCursor.Create(InputSystemCursorShape.SizeWestEast);
+    private static readonly InputCursor ArrowCursor = InputSystemCursor.Create(InputSystemCursorShape.Arrow);
+
+    private DragMode _drag = DragMode.None;
 
     public WaveformView()
     {
         InitializeComponent();
         KeyDown += OnKeyDown;
+    }
+
+    private enum DragMode
+    {
+        None,
+        Scrub,
+        TrimStart,
+        TrimEnd,
     }
 
     /// <summary>A <see cref="WaveformData"/> (typed as object so the DP stores the managed instance as-is).</summary>
@@ -53,12 +83,34 @@ public sealed partial class WaveformView : UserControl
         set => SetValue(SeekCommandProperty, value);
     }
 
+    /// <summary>Trim-in point, 0..1. Bind TwoWay.</summary>
+    public double TrimStart
+    {
+        get => (double)GetValue(TrimStartProperty);
+        set => SetValue(TrimStartProperty, value);
+    }
+
+    /// <summary>Trim-out point, 0..1. Bind TwoWay.</summary>
+    public double TrimEnd
+    {
+        get => (double)GetValue(TrimEndProperty);
+        set => SetValue(TrimEndProperty, value);
+    }
+
+    /// <summary>Smallest allowed gap between the handles, 0..1.</summary>
+    public double MinimumSelection
+    {
+        get => (double)GetValue(MinimumSelectionProperty);
+        set => SetValue(MinimumSelectionProperty, value);
+    }
+
     private void OnSurfaceSizeChanged(object sender, SizeChangedEventArgs e)
     {
         Surface.Clip = new RectangleGeometry { Rect = new Rect(0, 0, e.NewSize.Width, e.NewSize.Height) };
         CenterLine.X2 = e.NewSize.Width;
         RedrawEnvelope();
         UpdatePlayhead();
+        UpdateTrimVisuals();
     }
 
     private void RedrawEnvelope()
@@ -71,7 +123,7 @@ public sealed partial class WaveformView : UserControl
         {
             float[] peaks = data.Peaks;
             double mid = height / 2;
-            double half = mid - 2; // breathing room top and bottom
+            double half = mid - 4; // room for the handle brackets
             double step = width / peaks.Length;
 
             // Top edge left→right, then bottom edge right→left. Keep a 1px minimum so silence reads as a line.
@@ -101,6 +153,111 @@ public sealed partial class WaveformView : UserControl
         PlayedOverlay.Width = x;
     }
 
+    private void UpdateTrimVisuals()
+    {
+        double width = Surface.ActualWidth;
+        if (width <= 0)
+        {
+            return;
+        }
+
+        double startX = Math.Clamp(TrimStart, 0, 1) * width;
+        double endX = Math.Clamp(TrimEnd, 0, 1) * width;
+
+        LeftShade.Width = startX;
+        RightShade.Width = Math.Max(0, width - endX);
+        StartHandleTransform.X = Math.Min(startX, Math.Max(0, width - HandleWidth));
+        EndHandleTransform.X = Math.Max(0, endX - HandleWidth);
+    }
+
+    // ---------------------------------------------------------------- Pointer
+
+    private DragMode HitTest(double x)
+    {
+        double width = Surface.ActualWidth;
+        double toStart = Math.Abs(x - TrimStart * width);
+        double toEnd = Math.Abs(x - TrimEnd * width);
+
+        if (toStart <= HandleGrabDistance || toEnd <= HandleGrabDistance)
+        {
+            return toStart <= toEnd ? DragMode.TrimStart : DragMode.TrimEnd;
+        }
+
+        return DragMode.Scrub;
+    }
+
+    private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        Focus(FocusState.Pointer);
+        double x = e.GetCurrentPoint(Surface).Position.X;
+        _drag = HitTest(x);
+        Surface.CapturePointer(e.Pointer);
+        ApplyDrag(x);
+        e.Handled = true;
+    }
+
+    private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        double x = e.GetCurrentPoint(Surface).Position.X;
+        if (_drag != DragMode.None)
+        {
+            ApplyDrag(x);
+            e.Handled = true;
+            return;
+        }
+
+        ProtectedCursor = HitTest(x) == DragMode.Scrub ? ArrowCursor : ResizeCursor;
+    }
+
+    private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        if (_drag != DragMode.None)
+        {
+            Surface.ReleasePointerCapture(e.Pointer);
+            _drag = DragMode.None;
+            e.Handled = true;
+        }
+    }
+
+    private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e) => _drag = DragMode.None;
+
+    private void OnPointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        if (_drag == DragMode.None)
+        {
+            ProtectedCursor = ArrowCursor;
+        }
+    }
+
+    private void ApplyDrag(double x)
+    {
+        double width = Surface.ActualWidth;
+        if (width <= 0)
+        {
+            return;
+        }
+
+        double fraction = Math.Clamp(x / width, 0, 1);
+        switch (_drag)
+        {
+            case DragMode.Scrub:
+                SeekTo(fraction);
+                break;
+            case DragMode.TrimStart:
+                SetTrimStart(fraction);
+                break;
+            case DragMode.TrimEnd:
+                SetTrimEnd(fraction);
+                break;
+        }
+    }
+
+    private void SetTrimStart(double fraction) =>
+        TrimStart = Math.Clamp(fraction, 0, Math.Max(0, TrimEnd - MinimumSelection));
+
+    private void SetTrimEnd(double fraction) =>
+        TrimEnd = Math.Clamp(fraction, Math.Min(1, TrimStart + MinimumSelection), 1);
+
     private void SeekTo(double fraction)
     {
         fraction = Math.Clamp(fraction, 0, 1);
@@ -110,43 +267,7 @@ public sealed partial class WaveformView : UserControl
         }
     }
 
-    private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
-    {
-        Focus(FocusState.Pointer);
-        _scrubbing = Surface.CapturePointer(e.Pointer);
-        SeekToPointer(e);
-        e.Handled = true;
-    }
-
-    private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
-    {
-        if (_scrubbing)
-        {
-            SeekToPointer(e);
-            e.Handled = true;
-        }
-    }
-
-    private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
-    {
-        if (_scrubbing)
-        {
-            Surface.ReleasePointerCapture(e.Pointer);
-            _scrubbing = false;
-            e.Handled = true;
-        }
-    }
-
-    private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e) => _scrubbing = false;
-
-    private void SeekToPointer(PointerRoutedEventArgs e)
-    {
-        double width = Surface.ActualWidth;
-        if (width > 0)
-        {
-            SeekTo(e.GetCurrentPoint(Surface).Position.X / width);
-        }
-    }
+    // ---------------------------------------------------------------- Keyboard
 
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
@@ -154,16 +275,23 @@ public sealed partial class WaveformView : UserControl
         {
             case VirtualKey.Left:
                 SeekTo(Progress - KeyboardStep);
-                e.Handled = true;
                 break;
             case VirtualKey.Right:
                 SeekTo(Progress + KeyboardStep);
-                e.Handled = true;
                 break;
             case VirtualKey.Home:
-                SeekTo(0);
-                e.Handled = true;
+                SeekTo(TrimStart);
                 break;
+            case OpenBracketKey:
+                SetTrimStart(Progress);
+                break;
+            case CloseBracketKey:
+                SetTrimEnd(Progress);
+                break;
+            default:
+                return;
         }
+
+        e.Handled = true;
     }
 }

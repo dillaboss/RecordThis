@@ -14,6 +14,7 @@ public enum NoticeAction
     OpenSoundSettings,
     OpenMicrophonePrivacy,
     OpenFolder,
+    UndoDiscard,
 }
 
 /// <summary>A message shown in an InfoBar, optionally with one follow-up action.</summary>

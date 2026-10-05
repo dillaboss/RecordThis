@@ -5,6 +5,7 @@ using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
+using RecordThis.Services.Platform;
 using RecordThis.Services.UI;
 using RecordThis.ViewModels;
 using RecordThis.Views;
@@ -16,12 +17,13 @@ namespace RecordThis;
 public sealed partial class MainWindow : Window
 {
     private const int DefaultWidth = 640;
-    private const int DefaultHeight = 560;
+    private const int DefaultHeight = 600;
 
     private readonly MainViewModel _viewModel;
     private readonly DialogService _dialogs;
     private readonly CaptureView _captureView;
     private readonly ReviewView _reviewView;
+    private readonly HotkeyService _hotkey;
     private bool _closeConfirmed;
     private bool _closeInProgress;
 
@@ -55,10 +57,38 @@ public sealed partial class MainWindow : Window
             ApplyCaptionButtonColors();
         };
         AppWindow.Closing += OnAppWindowClosing;
-        Closed += (_, _) => _viewModel.Dispose();
+        Closed += (_, _) =>
+        {
+            _hotkey.Dispose();
+            _viewModel.Dispose();
+        };
+
+        // System-wide Ctrl+Alt+R: start/stop recording without switching to this window.
+        _hotkey = new HotkeyService(WindowNative.GetWindowHandle(this));
+        _hotkey.Pressed += OnHotkeyPressed;
+        viewModel.Capture.SetHotkeyStatus(_hotkey.IsRegistered, _hotkey.Gesture);
 
         UpdateScreen();
         UpdateTitle();
+    }
+
+    private void OnHotkeyPressed(object? sender, EventArgs e)
+    {
+        if (_viewModel.HandleHotkey(_hotkey.Gesture))
+        {
+            BringToFront();
+        }
+    }
+
+    /// <summary>Receiving a hotkey grants foreground rights, so this can bring the window forward from the background.</summary>
+    private void BringToFront()
+    {
+        if (AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter)
+        {
+            presenter.Restore();
+        }
+
+        Activate();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)

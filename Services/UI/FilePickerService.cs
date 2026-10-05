@@ -5,8 +5,8 @@ namespace RecordThis.Services.UI;
 
 public interface IFilePickerService
 {
-    /// <summary>Shows the Windows save dialog for a .wav file. Returns null if the user cancels.</summary>
-    Task<string?> PickSaveWavPathAsync(string suggestedFileName);
+    /// <summary>Shows the Windows save dialog. <paramref name="extension"/> includes the dot, e.g. ".mp3". Returns null if cancelled.</summary>
+    Task<string?> PickSavePathAsync(string suggestedFileName, string extension, string fileTypeLabel);
 }
 
 public sealed class FilePickerService : IFilePickerService
@@ -15,15 +15,15 @@ public sealed class FilePickerService : IFilePickerService
 
     public FilePickerService(Func<nint> windowHandle) => _windowHandle = windowHandle;
 
-    public async Task<string?> PickSaveWavPathAsync(string suggestedFileName)
+    public async Task<string?> PickSavePathAsync(string suggestedFileName, string extension, string fileTypeLabel)
     {
         var picker = new FileSavePicker
         {
             SuggestedStartLocation = PickerLocationId.MusicLibrary,
             SuggestedFileName = suggestedFileName,
-            DefaultFileExtension = ".wav",
+            DefaultFileExtension = extension,
         };
-        picker.FileTypeChoices.Add("WAV audio", new List<string> { ".wav" });
+        picker.FileTypeChoices.Add(fileTypeLabel, new List<string> { extension });
 
         // Unpackaged WinUI 3 apps must associate pickers with their window handle.
         InitializeWithWindow.Initialize(picker, _windowHandle());

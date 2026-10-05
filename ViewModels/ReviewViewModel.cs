@@ -9,26 +9,34 @@ using RecordThis.Services.UI;
 
 namespace RecordThis.ViewModels;
 
-/// <summary>Waveform preview, playback scrubbing, and WAV export orchestration.</summary>
+/// <summary>Waveform preview with trimming, playback, WAV/MP3 export, and copy-to-clipboard.</summary>
 public sealed partial class ReviewViewModel : ObservableObject, IDisposable
 {
     private const int WaveformBuckets = 480;
+    private const int FormatWav = 0;
+    private const int FormatMp3 = 1;
     private static readonly TimeSpan PositionInterval = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan MinimumSelectionLength = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan SilenceLeadIn = TimeSpan.FromMilliseconds(150);
+    private static readonly TimeSpan SilenceTail = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan CopyNoticeLifetime = TimeSpan.FromSeconds(5);
 
     private readonly AudioExportService _export;
     private readonly SpoolFileManager _spools;
     private readonly IFilePickerService _picker;
-    private readonly IDialogService _dialogs;
     private readonly IClipboardService _clipboard;
+    private readonly SettingsService _settings;
     private readonly ReviewPlaybackService _playback = new();
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _positionTimer;
     private readonly DispatcherQueueTimer _noticeTimer;
 
     private SpoolSession? _session;
+    private CaptureResult? _result;
     private IDisposable? _hold;
     private CancellationTokenSource? _analysisCts;
     private Task<bool>? _analysisTask;
+    private WaveformData? _analysis;
     private float _mixedPeak;
     private bool _disposed;
 
@@ -36,14 +44,14 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         AudioExportService export,
         SpoolFileManager spools,
         IFilePickerService picker,
-        IDialogService dialogs,
-        IClipboardService clipboard)
+        IClipboardService clipboard,
+        SettingsService settings)
     {
         _export = export;
         _spools = spools;
         _picker = picker;
-        _dialogs = dialogs;
         _clipboard = clipboard;
+        _settings = settings;
         _dispatcher = DispatcherQueue.GetForCurrentThread()
                       ?? throw new InvalidOperationException("ReviewViewModel must be created on the UI thread.");
 
@@ -57,12 +65,28 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
 
         _playback.PlaybackStopped += OnPlaybackStopped;
 
+        // Restore remembered export choices (fields set directly so nothing is re-saved during startup).
+        var saved = settings.Current;
+        _selectedFormat = saved.ExportFormat == "mp3" ? FormatChoices[FormatMp3] : FormatChoices[FormatWav];
         _selectedSampleRate = SampleRateChoices[1];
-        _selectedBitDepth = BitDepthChoices[1];
+        _selectedBitDepth = BitDepthChoices.FirstOrDefault(c => c.Value == saved.BitDepth) ?? BitDepthChoices[1];
+        _selectedBitRate = BitRateChoices.FirstOrDefault(c => c.Value == saved.Mp3BitRate) ?? BitRateChoices[1];
+        _preferCopy = saved.PreferCopy;
     }
 
-    /// <summary>Raised when the user discards (or starts over after saving) and the capture screen should return.</summary>
+    /// <summary>Raised when the review screen closes (discarded, or "New recording" after saving).</summary>
     public event EventHandler? Closed;
+
+    /// <summary>Raised when an unsaved recording is discarded. The spool is still on disk so it can be undone.</summary>
+    public event EventHandler<CaptureResult>? Discarded;
+
+    // ---------------------------------------------------------------- Export choices
+
+    public IReadOnlyList<ExportChoice> FormatChoices { get; } =
+    [
+        new("WAV (lossless)", FormatWav),
+        new("MP3 (smaller)", FormatMp3),
+    ];
 
     public IReadOnlyList<ExportChoice> SampleRateChoices { get; } =
     [
@@ -76,11 +100,61 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         new("24-bit", 24),
     ];
 
+    public IReadOnlyList<ExportChoice> BitRateChoices { get; } =
+    [
+        new("128 kbps", 128),
+        new("192 kbps", 192),
+        new("320 kbps", 320),
+    ];
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsWav), nameof(IsMp3), nameof(SaveButtonText))]
+    private ExportChoice _selectedFormat;
+
     [ObservableProperty]
     private ExportChoice _selectedSampleRate;
 
     [ObservableProperty]
     private ExportChoice _selectedBitDepth;
+
+    [ObservableProperty]
+    private ExportChoice _selectedBitRate;
+
+    /// <summary>True when the last share action was Copy: Copy becomes the highlighted (accent) button.</summary>
+    [ObservableProperty]
+    private bool _preferCopy;
+
+    public bool IsWav => SelectedFormat.Value == FormatWav;
+
+    public bool IsMp3 => SelectedFormat.Value == FormatMp3;
+
+    public string SaveButtonText => IsMp3 ? "Save As (.mp3)" : "Save As (.wav)";
+
+    partial void OnSelectedFormatChanged(ExportChoice value)
+    {
+        _settings.Current.ExportFormat = value.Value == FormatMp3 ? "mp3" : "wav";
+        _settings.Save();
+    }
+
+    partial void OnSelectedBitDepthChanged(ExportChoice value)
+    {
+        _settings.Current.BitDepth = value.Value;
+        _settings.Save();
+    }
+
+    partial void OnSelectedBitRateChanged(ExportChoice value)
+    {
+        _settings.Current.Mp3BitRate = value.Value;
+        _settings.Save();
+    }
+
+    partial void OnPreferCopyChanged(bool value)
+    {
+        _settings.Current.PreferCopy = value;
+        _settings.Save();
+    }
+
+    // ---------------------------------------------------------------- Display state
 
     [ObservableProperty]
     private string _headerText = string.Empty;
@@ -92,9 +166,10 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     private WaveformData? _waveform;
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(TrimSilenceCommand))]
     private bool _isAnalyzing;
 
-    /// <summary>Playback position, 0..1.</summary>
+    /// <summary>Playback position, 0..1 of the whole recording.</summary>
     [ObservableProperty]
     private double _progress;
 
@@ -120,14 +195,21 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     private string? _savedPath;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(DiscardText))]
+    [NotifyPropertyChangedFor(nameof(IsSaved))]
     private bool _hasUnsavedRecording;
+
+    public bool IsSaved => !HasUnsavedRecording;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasNotice))]
     private Notice? _notice;
 
     public bool HasNotice => Notice is not null;
+
+    public string PlayPauseText => IsPlaying ? "Pause" : "Play";
+
+    /// <summary>Pause (E769) while playing, Play (E768) otherwise.</summary>
+    public string PlayPauseGlyph => IsPlaying ? "\uE769" : "\uE768";
 
     partial void OnNoticeChanged(Notice? value)
     {
@@ -140,12 +222,103 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         }
     }
 
-    public string DiscardText => HasUnsavedRecording ? "Discard" : "New recording";
+    // ---------------------------------------------------------------- Trimming
 
-    public string PlayPauseText => IsPlaying ? "Pause" : "Play";
+    /// <summary>Trim-in point as a fraction of the recording (0..1).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsTrimmed), nameof(TrimText))]
+    [NotifyCanExecuteChangedFor(nameof(ResetTrimCommand), nameof(TrimSilenceCommand))]
+    private double _trimStart;
 
-    /// <summary>Pause (E769) while playing, Play (E768) otherwise.</summary>
-    public string PlayPauseGlyph => IsPlaying ? "\uE769" : "\uE768";
+    /// <summary>Trim-out point as a fraction of the recording (0..1).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsTrimmed), nameof(TrimText))]
+    [NotifyCanExecuteChangedFor(nameof(ResetTrimCommand), nameof(TrimSilenceCommand))]
+    private double _trimEnd = 1;
+
+    /// <summary>Smallest selection the handles allow, as a fraction of the recording.</summary>
+    [ObservableProperty]
+    private double _minimumSelection = 0.01;
+
+    public bool IsTrimmed => TrimStart > 0.0005 || TrimEnd < 0.9995;
+
+    public string TrimText
+    {
+        get
+        {
+            if (_session is null)
+            {
+                return string.Empty;
+            }
+
+            if (!IsTrimmed)
+            {
+                return "Drag the edges of the waveform to trim the start or end.";
+            }
+
+            TimeSpan total = _session.Duration;
+            return $"Keeping {TimeFormat.Precise(total * (TrimEnd - TrimStart))} of {TimeFormat.Precise(total)}";
+        }
+    }
+
+    partial void OnTrimStartChanged(double value) => ApplyTrimToPlayback();
+
+    partial void OnTrimEndChanged(double value) => ApplyTrimToPlayback();
+
+    private (long Start, long End) TrimFrames()
+    {
+        long total = _playback.TotalFrames > 0 ? _playback.TotalFrames : _session?.FrameCount ?? 0;
+        long start = (long)Math.Floor(TrimStart * total);
+        long end = (long)Math.Ceiling(TrimEnd * total);
+        return (Math.Clamp(start, 0, total), Math.Clamp(end, 0, total));
+    }
+
+    private void ApplyTrimToPlayback()
+    {
+        var (start, end) = TrimFrames();
+        _playback.SetRange(start, end);
+    }
+
+    private bool CanTrimSilence()
+    {
+        if (_analysis is not { HasSound: true } data || data.TotalFrames == 0 || IsAnalyzing)
+        {
+            return false;
+        }
+
+        var (start, end) = SilenceBounds(data);
+        return Math.Abs(start - TrimStart) > 0.0005 || Math.Abs(end - TrimEnd) > 0.0005;
+    }
+
+    /// <summary>Moves the handles to where sound actually starts and ends, with a little breathing room.</summary>
+    [RelayCommand(CanExecute = nameof(CanTrimSilence))]
+    private void TrimSilence()
+    {
+        if (_analysis is not { HasSound: true } data)
+        {
+            return;
+        }
+
+        var (start, end) = SilenceBounds(data);
+        TrimStart = start;
+        TrimEnd = end;
+    }
+
+    private (double Start, double End) SilenceBounds(WaveformData data)
+    {
+        double rate = _session?.Format.SampleRate ?? 48000;
+        double total = data.TotalFrames;
+        double start = Math.Max(0, data.FirstSoundFrame - SilenceLeadIn.TotalSeconds * rate) / total;
+        double end = Math.Min(total, data.LastSoundFrame + SilenceTail.TotalSeconds * rate) / total;
+        return (start, Math.Max(end, Math.Min(1, start + MinimumSelection)));
+    }
+
+    [RelayCommand(CanExecute = nameof(IsTrimmed))]
+    private void ResetTrim()
+    {
+        TrimStart = 0;
+        TrimEnd = 1;
+    }
 
     // ---------------------------------------------------------------- Session lifecycle
 
@@ -158,8 +331,10 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
 
         var session = result.Session;
         _session = session;
+        _result = result;
         _hold = _spools.Hold(session);
         _mixedPeak = 0f;
+        _analysis = null;
 
         TimeSpan duration = session.Duration;
         HeaderText = $"Playback preview ({TimeFormat.Clock(duration)} captured)";
@@ -176,7 +351,6 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
 
         // Default to the capture's rate family so the common case needs no resampling.
         SelectedSampleRate = session.Format.SampleRate % 11025 == 0 ? SampleRateChoices[0] : SampleRateChoices[1];
-        SelectedBitDepth = BitDepthChoices[1];
 
         try
         {
@@ -189,6 +363,14 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
                 $"{AudioErrorTranslator.Describe(ex)} You can still save the recording.",
                 NoticeSeverity.Warning);
         }
+
+        MinimumSelection = duration > TimeSpan.Zero
+            ? Math.Min(1, MinimumSelectionLength.TotalSeconds / duration.TotalSeconds)
+            : 1;
+        TrimStart = 0;
+        TrimEnd = 1;
+        ApplyTrimToPlayback();
+        OnPropertyChanged(nameof(TrimText));
 
         _analysisCts = new CancellationTokenSource();
         _analysisTask = AnalyzeAsync(session, _analysisCts.Token);
@@ -205,12 +387,23 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         Closed?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>Used by the global shortcut when there's still an unsaved recording on screen.</summary>
+    public void ShowFinishFirstNotice(string gesture) =>
+        Notice = new Notice(
+            "Finish with this recording first",
+            $"Copy, save or discard it, then press {gesture} to record again.",
+            NoticeSeverity.Informational)
+        {
+            Lifetime = CopyNoticeLifetime,
+        };
+
     private void Release(bool deleteSpool)
     {
         _analysisCts?.Cancel();
         _analysisCts?.Dispose();
         _analysisCts = null;
         _analysisTask = null;
+        _analysis = null;
 
         _positionTimer.Stop();
         _playback.Unload();
@@ -225,6 +418,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         }
 
         _session = null;
+        _result = null;
         Waveform = null;
         IsAnalyzing = false;
         NotifyCommands();
@@ -241,6 +435,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
                 return false;
             }
 
+            _analysis = data;
             _mixedPeak = data.MixedPeak;
             float gain = AudioExportService.ClipSafeGain(data.MixedPeak);
             _playback.SetGain(gain);
@@ -252,7 +447,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
                 peaks[i] = Math.Min(1f, data.Peaks[i] * gain);
             }
 
-            Waveform = new WaveformData(peaks, data.MixedPeak * gain);
+            Waveform = data with { Peaks = peaks, MixedPeak = data.MixedPeak * gain };
 
             if (gain < 1f)
             {
@@ -282,6 +477,7 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
             if (ReferenceEquals(_session, session))
             {
                 IsAnalyzing = false;
+                TrimSilenceCommand.NotifyCanExecuteChanged();
             }
         }
     }
@@ -363,11 +559,20 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         PositionText = TimeFormat.Clock(_playback.Position);
     }
 
-    // ---------------------------------------------------------------- Export
+    // ---------------------------------------------------------------- Save / Copy
 
-    private bool CanSave() => _session is not null && !IsExporting;
+    private bool CanExport() => _session is not null && !IsExporting;
 
-    [RelayCommand(CanExecute = nameof(CanSave))]
+    private ExportOptions BuildOptions(ExportFormat format, int bitDepth)
+    {
+        var (start, end) = TrimFrames();
+        return new ExportOptions(format, SelectedSampleRate.Value, bitDepth, SelectedBitRate.Value, start, end);
+    }
+
+    private string BaseFileName(SpoolSession session) =>
+        $"RecordThis {session.StartedAt.LocalDateTime:yyyy-MM-dd HH.mm.ss}";
+
+    [RelayCommand(CanExecute = nameof(CanExport))]
     private async Task SaveAsync()
     {
         if (_session is not { } session)
@@ -375,10 +580,15 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var options = BuildOptions(IsMp3 ? ExportFormat.Mp3 : ExportFormat.Wav, SelectedBitDepth.Value);
+
         string? path;
         try
         {
-            path = await _picker.PickSaveWavPathAsync($"RecordThis {session.StartedAt.LocalDateTime:yyyy-MM-dd HH.mm.ss}");
+            path = await _picker.PickSavePathAsync(
+                BaseFileName(session),
+                options.Extension,
+                IsMp3 ? "MP3 audio" : "WAV audio");
         }
         catch (Exception ex)
         {
@@ -391,6 +601,72 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
             return; // cancelled
         }
 
+        await RunExportAsync(session, async progress =>
+        {
+            ExportResult result = await _export.ExportAsync(session, _mixedPeak, options, path, progress, CancellationToken.None);
+            SavedPath = result.FilePath;
+            HasUnsavedRecording = false;
+            PreferCopy = false;
+
+            string quality = options.Format == ExportFormat.Mp3
+                ? $"MP3 {options.Mp3BitRate} kbps"
+                : $"{SelectedSampleRate.Label}, {options.BitDepth}-bit";
+            Notice = new Notice(
+                "Recording saved",
+                $"{Path.GetFileName(result.FilePath)} · {quality}" + (result.Downmixed ? ", downmixed to stereo" : string.Empty),
+                NoticeSeverity.Success,
+                NoticeAction.OpenFolder,
+                "Show in folder",
+                result.FilePath);
+        });
+    }
+
+    /// <summary>Encodes an MP3 into a scratch folder and puts it on the clipboard as a file, ready for Ctrl+V in a chat app.</summary>
+    [RelayCommand(CanExecute = nameof(CanExport))]
+    private async Task CopyAsync()
+    {
+        if (_session is not { } session)
+        {
+            return;
+        }
+
+        await RunExportAsync(session, async progress =>
+        {
+            string baseName = BaseFileName(session);
+            string path;
+            string format;
+            string? note = null;
+            try
+            {
+                path = _clipboard.CreateTempFilePath(baseName + ".mp3");
+                await _export.ExportAsync(session, _mixedPeak, BuildOptions(ExportFormat.Mp3, 16), path, progress, CancellationToken.None);
+                format = "MP3";
+            }
+            catch (Mp3EncoderUnavailableException)
+            {
+                // Windows "N" editions ship without the MP3 encoder: fall back to a 16-bit WAV.
+                path = _clipboard.CreateTempFilePath(baseName + ".wav");
+                await _export.ExportAsync(session, _mixedPeak, BuildOptions(ExportFormat.Wav, 16), path, progress, CancellationToken.None);
+                format = "WAV";
+                note = "This PC has no MP3 encoder, so a WAV was copied instead.";
+            }
+
+            _clipboard.CopyFile(path);
+            PreferCopy = true;
+
+            Notice = new Notice(
+                $"Copied to clipboard as {FormatSize(new FileInfo(path).Length)} {format}",
+                note ?? string.Empty,
+                NoticeSeverity.Success)
+            {
+                Lifetime = CopyNoticeLifetime,
+            };
+        });
+    }
+
+    /// <summary>Shared busy/progress/error handling for Save and Copy.</summary>
+    private async Task RunExportAsync(SpoolSession session, Func<IProgress<double>, Task> work)
+    {
         if (IsPlaying)
         {
             Pause();
@@ -399,7 +675,6 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         IsExporting = true;
         ExportProgress = 0;
         Notice = null;
-        var options = new ExportOptions(SelectedSampleRate.Value, SelectedBitDepth.Value);
         var progress = new Progress<double>(p => ExportProgress = p * 100);
 
         try
@@ -409,17 +684,17 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
                 await analysis; // the clip-safe gain needs the downmix peak
             }
 
-            ExportResult result = await _export.ExportAsync(session, _mixedPeak, options, path, progress, CancellationToken.None);
-            SavedPath = result.FilePath;
-            HasUnsavedRecording = false;
+            if (ReferenceEquals(_session, session))
+            {
+                await work(progress);
+            }
+        }
+        catch (Mp3EncoderUnavailableException)
+        {
             Notice = new Notice(
-                "Recording saved",
-                $"{Path.GetFileName(result.FilePath)} · {SelectedSampleRate.Label}, {options.BitDepth}-bit" +
-                (result.Downmixed ? ", downmixed to stereo" : string.Empty),
-                NoticeSeverity.Success,
-                NoticeAction.OpenFolder,
-                "Show in folder",
-                result.FilePath);
+                "MP3 isn't available on this PC",
+                "Windows on this PC doesn't include an MP3 encoder. Choose WAV instead, or install the Media Feature Pack from Optional features in Settings.",
+                NoticeSeverity.Error);
         }
         catch (UnauthorizedAccessException)
         {
@@ -431,79 +706,8 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         catch (Exception ex)
         {
             Notice = new Notice(
-                "Couldn't save the recording",
-                $"{AudioErrorTranslator.Describe(ex)} Your recording is still here — try again or choose another location.",
-                NoticeSeverity.Error);
-        }
-        finally
-        {
-            IsExporting = false;
-        }
-    }
-
-    private bool CanCopy() => _session is not null && !IsExporting;
-
-    /// <summary>Encodes an MP3 into a scratch folder and puts it on the clipboard as a file, ready for Ctrl+V in a chat app.</summary>
-    [RelayCommand(CanExecute = nameof(CanCopy))]
-    private async Task CopyAsync()
-    {
-        if (_session is not { } session)
-        {
-            return;
-        }
-
-        if (IsPlaying)
-        {
-            Pause();
-        }
-
-        IsExporting = true;
-        ExportProgress = 0;
-        Notice = null;
-        var progress = new Progress<double>(p => ExportProgress = p * 100);
-        string baseName = $"RecordThis {session.StartedAt.LocalDateTime:yyyy-MM-dd HH.mm.ss}";
-        int sampleRate = SelectedSampleRate.Value;
-
-        try
-        {
-            if (_analysisTask is { } analysis)
-            {
-                await analysis;
-            }
-
-            string path;
-            string format;
-            string? note = null;
-            try
-            {
-                path = _clipboard.CreateTempFilePath(baseName + ".mp3");
-                await _export.ExportMp3Async(session, _mixedPeak, sampleRate, path, progress, CancellationToken.None);
-                format = "MP3";
-            }
-            catch (Mp3EncoderUnavailableException)
-            {
-                // Windows "N" editions ship without the MP3 encoder: fall back to a 16-bit WAV.
-                path = _clipboard.CreateTempFilePath(baseName + ".wav");
-                await _export.ExportAsync(session, _mixedPeak, new ExportOptions(sampleRate, 16), path, progress, CancellationToken.None);
-                format = "WAV";
-                note = "This PC has no MP3 encoder, so a WAV was copied instead.";
-            }
-
-            _clipboard.CopyFile(path);
-
-            Notice = new Notice(
-                $"Copied to clipboard as {FormatSize(new FileInfo(path).Length)} {format}",
-                note ?? string.Empty,
-                NoticeSeverity.Success)
-            {
-                Lifetime = TimeSpan.FromSeconds(5),
-            };
-        }
-        catch (Exception ex)
-        {
-            Notice = new Notice(
-                "Couldn't copy the recording",
-                $"{AudioErrorTranslator.Describe(ex)} You can still use Save As instead.",
+                "Something went wrong",
+                $"{AudioErrorTranslator.Describe(ex)} Your recording is still here — try again.",
                 NoticeSeverity.Error);
         }
         finally
@@ -515,26 +719,28 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
     private static string FormatSize(long bytes) =>
         bytes >= 1024 * 1024 ? $"{bytes / (1024.0 * 1024):0.0} MB" : $"{Math.Max(1, bytes / 1024)} KB";
 
+    // ---------------------------------------------------------------- Discard / New recording
+
     private bool CanDiscard() => _session is not null && !IsExporting;
 
+    /// <summary>
+    /// Unsaved: hand the recording to the capture screen, which offers Undo for 5 seconds before deleting it.
+    /// Saved: nothing to lose, so just start over.
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanDiscard))]
-    private async Task DiscardAsync()
+    private void Discard()
     {
-        if (HasUnsavedRecording)
+        if (!HasUnsavedRecording || _result is not { } result)
         {
-            var choice = await _dialogs.ShowAsync(
-                "Discard this recording?",
-                "The captured audio will be permanently deleted. This can't be undone.",
-                primaryText: "Discard",
-                closeText: "Cancel");
-
-            if (choice != DialogChoice.Primary)
-            {
-                return;
-            }
+            CloseSession();
+            return;
         }
 
-        CloseSession();
+        Release(deleteSpool: false);
+        HasUnsavedRecording = false;
+        Notice = null;
+        Discarded?.Invoke(this, result);
+        Closed?.Invoke(this, EventArgs.Empty);
     }
 
     [RelayCommand]
@@ -548,6 +754,8 @@ public sealed partial class ReviewViewModel : ObservableObject, IDisposable
         SaveCommand.NotifyCanExecuteChanged();
         CopyCommand.NotifyCanExecuteChanged();
         DiscardCommand.NotifyCanExecuteChanged();
+        TrimSilenceCommand.NotifyCanExecuteChanged();
+        ResetTrimCommand.NotifyCanExecuteChanged();
     }
 
     private static string BuildDetails(CaptureResult result)

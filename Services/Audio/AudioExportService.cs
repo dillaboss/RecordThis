@@ -7,7 +7,28 @@ using RecordThis.Services.Audio.Pipeline;
 
 namespace RecordThis.Services.Audio;
 
-public sealed record ExportOptions(int SampleRate, int BitDepth);
+public enum ExportFormat
+{
+    Wav,
+    Mp3,
+}
+
+/// <param name="Format">WAV (lossless) or MP3 (compressed).</param>
+/// <param name="SampleRate">44100 or 48000.</param>
+/// <param name="BitDepth">WAV only: 16 (TPDF dithered) or 24.</param>
+/// <param name="Mp3BitRate">MP3 only, in kbps: 128, 192 or 320.</param>
+/// <param name="StartFrame">Trim-in point, in source frames.</param>
+/// <param name="EndFrame">Trim-out point (exclusive), in source frames; null = end of recording.</param>
+public sealed record ExportOptions(
+    ExportFormat Format,
+    int SampleRate,
+    int BitDepth = 24,
+    int Mp3BitRate = 192,
+    long StartFrame = 0,
+    long? EndFrame = null)
+{
+    public string Extension => Format == ExportFormat.Mp3 ? ".mp3" : ".wav";
+}
 
 public sealed record ExportResult(string FilePath, TimeSpan Duration, double GainDb, bool Downmixed, bool Resampled);
 
@@ -15,10 +36,10 @@ public sealed record ExportResult(string FilePath, TimeSpan Duration, double Gai
 public sealed class Mp3EncoderUnavailableException() : Exception("This PC doesn't have an MP3 encoder installed.");
 
 /// <summary>
-/// Finalization stage: spool → ITU-R BS.775 downmix → clip-safe gain → WdlResampler →
-/// 16-bit (TPDF dithered) or 24-bit linear PCM → RIFF/WAV. The whole chain streams from disk,
-/// and the WAV is written to a ".partial" file that is only renamed into place once complete,
-/// so a failed or cancelled export never leaves a truncated file behind.
+/// Finalization stage: spool (trimmed) → ITU-R BS.775 downmix → clip-safe gain → WdlResampler →
+/// either 16-bit TPDF-dithered / 24-bit PCM in a RIFF/WAV, or Windows' Media Foundation MP3
+/// encoder. Everything streams from disk. WAVs are written to a ".partial" file and renamed when
+/// complete, so a failed or cancelled export never leaves a truncated file behind.
 /// </summary>
 public sealed class AudioExportService
 {
@@ -40,9 +61,28 @@ public sealed class AudioExportService
         string destinationPath,
         IProgress<double>? progress,
         CancellationToken cancellationToken) =>
-        Task.Run(() => Export(session, mixedPeak, options, destinationPath, progress, cancellationToken), cancellationToken);
+        Task.Run(
+            () => options.Format == ExportFormat.Mp3
+                ? ExportMp3(session, mixedPeak, options, destinationPath, progress, cancellationToken)
+                : ExportWav(session, mixedPeak, options, destinationPath, progress, cancellationToken),
+            cancellationToken);
 
-    private static ExportResult Export(
+    /// <summary>Opens the spool at the trim range and builds downmix → gain → resampler.</summary>
+    private static Chain BuildChain(SpoolSession session, float mixedPeak, ExportOptions options)
+    {
+        var spool = new SpoolSampleProvider(session);
+        long start = Math.Clamp(options.StartFrame, 0, spool.TotalFrames);
+        long end = Math.Clamp(options.EndFrame ?? spool.TotalFrames, start, spool.TotalFrames);
+        spool.PositionFrames = start;
+        spool.EndLimitFrames = end;
+
+        float gain = ClipSafeGain(mixedPeak);
+        var downmix = new DownmixSampleProvider(spool, session.Format.ChannelMask) { Gain = gain };
+        var resampler = new ExactLengthResampler(downmix, options.SampleRate, end - start);
+        return new Chain(spool, downmix, resampler, gain);
+    }
+
+    private static ExportResult ExportWav(
         SpoolSession session,
         float mixedPeak,
         ExportOptions options,
@@ -55,12 +95,8 @@ public sealed class AudioExportService
             throw new ArgumentOutOfRangeException(nameof(options), "Bit depth must be 16 or 24.");
         }
 
-        string partialPath = destinationPath + ".partial";
-        float gain = ClipSafeGain(mixedPeak);
-
-        using var spool = new SpoolSampleProvider(session);
-        var downmix = new DownmixSampleProvider(spool, session.Format.ChannelMask) { Gain = gain };
-        var resampler = new ExactLengthResampler(downmix, options.SampleRate, spool.TotalFrames);
+        using var chain = BuildChain(session, mixedPeak, options);
+        var resampler = chain.Resampler;
 
         int channels = resampler.WaveFormat.Channels;
         int bytesPerSample = options.BitDepth / 8;
@@ -69,9 +105,10 @@ public sealed class AudioExportService
         {
             throw new InvalidOperationException(
                 "This recording is too long for a single WAV file (WAV files are limited to 4 GB). " +
-                "Try 16-bit or 44.1 kHz to make the file smaller.");
+                "Try MP3, 16-bit or 44.1 kHz to make the file smaller.");
         }
 
+        string partialPath = destinationPath + ".partial";
         var outputFormat = new WaveFormat(options.SampleRate, options.BitDepth, channels);
         var encoder = new PcmEncoder(options.BitDepth);
         var floats = new float[FramesPerChunk * channels];
@@ -106,96 +143,101 @@ public sealed class AudioExportService
         catch
         {
             TryDelete(partialPath);
-
-            // FileSavePicker may have created an empty placeholder at the destination.
-            try
-            {
-                var info = new FileInfo(destinationPath);
-                if (info.Exists && info.Length == 0)
-                {
-                    info.Delete();
-                }
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
-
+            DeleteEmptyPlaceholder(destinationPath);
             throw;
         }
 
         progress?.Report(1.0);
-        return new ExportResult(
-            destinationPath,
-            TimeSpan.FromSeconds((double)resampler.ExpectedFrames / options.SampleRate),
-            GainDb: gain < 1f ? 20 * Math.Log10(gain) : 0,
-            Downmixed: downmix.IsDownmixing,
-            Resampled: resampler.IsResampling);
+        return chain.ToResult(destinationPath, options.SampleRate);
     }
-
-    /// <summary>
-    /// Same pipeline as <see cref="ExportAsync"/> (downmix, clip-safe gain, resample), then
-    /// 16-bit PCM into Windows' Media Foundation MP3 encoder. Small enough to share in chat apps:
-    /// 192 kbps is about 1.4 MB per minute.
-    /// </summary>
-    public Task<ExportResult> ExportMp3Async(
-        SpoolSession session,
-        float mixedPeak,
-        int sampleRate,
-        string destinationPath,
-        IProgress<double>? progress,
-        CancellationToken cancellationToken) =>
-        Task.Run(() => ExportMp3(session, mixedPeak, sampleRate, destinationPath, progress, cancellationToken), cancellationToken);
-
-    private const int Mp3BitRate = 192_000;
 
     private static ExportResult ExportMp3(
         SpoolSession session,
         float mixedPeak,
-        int sampleRate,
+        ExportOptions options,
         string destinationPath,
         IProgress<double>? progress,
         CancellationToken cancellationToken)
     {
         MediaFoundationApi.Startup();
 
-        float gain = ClipSafeGain(mixedPeak);
-        using var spool = new SpoolSampleProvider(session);
-        var downmix = new DownmixSampleProvider(spool, session.Format.ChannelMask) { Gain = gain };
-        var resampler = new ExactLengthResampler(downmix, sampleRate, spool.TotalFrames);
-        var pcm16 = new SampleToWaveProvider16(resampler);
+        using var chain = BuildChain(session, mixedPeak, options);
+        var pcm16 = new SampleToWaveProvider16(chain.Resampler);
+        int bitRate = options.Mp3BitRate * 1000;
 
-        if (MediaFoundationEncoder.SelectMediaType(AudioSubtypes.MFAudioFormat_MP3, pcm16.WaveFormat, Mp3BitRate) is null)
+        if (MediaFoundationEncoder.SelectMediaType(AudioSubtypes.MFAudioFormat_MP3, pcm16.WaveFormat, bitRate) is null)
         {
             throw new Mp3EncoderUnavailableException();
         }
 
-        long totalBytes = resampler.ExpectedFrames * pcm16.WaveFormat.BlockAlign;
+        long totalBytes = chain.Resampler.ExpectedFrames * pcm16.WaveFormat.BlockAlign;
         var tracked = new ProgressWaveProvider(pcm16, totalBytes, progress, cancellationToken);
+
+        // Media Foundation picks the container from the file extension, so the temp file must end in .mp3.
+        string partialPath = Path.Combine(
+            Path.GetDirectoryName(destinationPath) ?? ".",
+            $".{Path.GetFileNameWithoutExtension(destinationPath)}.partial.mp3");
 
         try
         {
-            // Media Foundation picks the container from the file extension, so write straight to the .mp3 path.
-            MediaFoundationEncoder.EncodeToMp3(tracked, destinationPath, Mp3BitRate);
+            MediaFoundationEncoder.EncodeToMp3(tracked, partialPath, bitRate);
+            File.Move(partialPath, destinationPath, overwrite: true);
         }
         catch
         {
-            TryDelete(destinationPath);
+            TryDelete(partialPath);
+            DeleteEmptyPlaceholder(destinationPath);
             throw;
         }
 
         progress?.Report(1.0);
-        return new ExportResult(
-            destinationPath,
-            TimeSpan.FromSeconds((double)resampler.ExpectedFrames / sampleRate),
-            GainDb: gain < 1f ? 20 * Math.Log10(gain) : 0,
-            Downmixed: downmix.IsDownmixing,
-            Resampled: resampler.IsResampling);
+        return chain.ToResult(destinationPath, options.SampleRate);
     }
 
-    /// <summary>Pass-through that reports progress and honours cancellation while the encoder pulls audio.</summary>
+    private static void DeleteEmptyPlaceholder(string destinationPath)
+    {
+        // FileSavePicker may have created an empty placeholder at the destination.
+        try
+        {
+            var info = new FileInfo(destinationPath);
+            if (info.Exists && info.Length == 0)
+            {
+                info.Delete();
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private sealed record Chain(
+        SpoolSampleProvider Spool,
+        DownmixSampleProvider Downmix,
+        ExactLengthResampler Resampler,
+        float Gain) : IDisposable
+    {
+        public ExportResult ToResult(string path, int sampleRate) => new(
+            path,
+            TimeSpan.FromSeconds((double)Resampler.ExpectedFrames / sampleRate),
+            GainDb: Gain < 1f ? 20 * Math.Log10(Gain) : 0,
+            Downmixed: Downmix.IsDownmixing,
+            Resampled: Resampler.IsResampling);
+
+        public void Dispose() => Spool.Dispose();
+    }
+
+    /// <summary>Pass-through that reports progress and honours cancellation while the MP3 encoder pulls audio.</summary>
     private sealed class ProgressWaveProvider(
         IWaveProvider source,
         long totalBytes,
@@ -221,20 +263,6 @@ public sealed class AudioExportService
             }
 
             return read;
-        }
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
         }
     }
 

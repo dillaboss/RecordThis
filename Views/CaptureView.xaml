@@ -5,6 +5,25 @@
     xmlns:local="using:RecordThis.Views"
     xmlns:models="using:RecordThis.Models">
 
+    <UserControl.Resources>
+        <Style x:Key="KeycapStyle" TargetType="Border">
+            <Setter Property="Padding" Value="6,1,6,2" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="BorderThickness" Value="1,1,1,2" />
+            <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}" />
+            <Setter Property="Background" Value="{ThemeResource ControlFillColorDefaultBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="KeycapTextStyle" BasedOn="{StaticResource CaptionTextBlockStyle}" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style x:Key="ShortcutLabelStyle" BasedOn="{StaticResource CaptionTextBlockStyle}" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+    </UserControl.Resources>
+
     <!--
         Content is pinned to the window with fixed margins (no centring, no scroll viewer), and nothing
         on this screen changes size when recording starts, so the layout can't drift sideways.
@@ -51,14 +70,34 @@
                     CornerRadius="8">
                 <StackPanel Spacing="20">
 
-                    <!-- Source selector -->
+                    <!-- Source: System audio (loopback) vs Microphone, then the device within that group -->
+                    <StackPanel Spacing="8">
+                    <SelectorBar x:Name="SourceTabs"
+                                 Margin="-12,0,0,0"
+                                 IsEnabled="{x:Bind ViewModel.CanChangeDevice, Mode=OneWay}"
+                                 SelectionChanged="OnSourceTabChanged">
+                        <SelectorBarItem x:Name="SystemAudioTab"
+                                         Text="System audio"
+                                         ToolTipService.ToolTip="Record everything a speaker or headphone output plays">
+                            <SelectorBarItem.Icon>
+                                <FontIcon Glyph="&#xE767;" />
+                            </SelectorBarItem.Icon>
+                        </SelectorBarItem>
+                        <SelectorBarItem x:Name="MicrophoneTab"
+                                         Text="Microphone"
+                                         ToolTipService.ToolTip="Record from a microphone or other input">
+                            <SelectorBarItem.Icon>
+                                <FontIcon Glyph="&#xE720;" />
+                            </SelectorBarItem.Icon>
+                        </SelectorBarItem>
+                    </SelectorBar>
                     <ComboBox
                         x:Name="SourceCombo"
                         HorizontalAlignment="Stretch"
-                        Header="Audio input / output source"
+                        AutomationProperties.Name="Device"
                         IsEnabled="{x:Bind ViewModel.CanChangeDevice, Mode=OneWay}"
                         ItemsSource="{x:Bind ViewModel.Devices}"
-                        PlaceholderText="No audio devices found"
+                        PlaceholderText="{x:Bind ViewModel.SourcePlaceholder, Mode=OneWay}"
                         SelectedItem="{x:Bind ViewModel.SelectedDevice, Mode=OneWay}"
                         SelectionChanged="OnSourceSelectionChanged">
                         <ComboBox.ItemTemplate>
@@ -80,6 +119,7 @@
                             </DataTemplate>
                         </ComboBox.ItemTemplate>
                     </ComboBox>
+                    </StackPanel>
 
                     <!-- Live level meter -->
                     <StackPanel Spacing="8">
@@ -133,7 +173,8 @@
                                    Text="{x:Bind ViewModel.FormatText, Mode=OneWay}" />
                     </StackPanel>
 
-                    <!-- Start / stop -->
+                    <!-- Start / stop, with the global shortcut right underneath -->
+                    <StackPanel Spacing="10">
                     <Button HorizontalAlignment="Stretch"
                             MinHeight="48"
                             AutomationProperties.Name="{x:Bind ViewModel.RecordButtonText, Mode=OneWay}"
@@ -145,16 +186,66 @@
                                        Text="{x:Bind ViewModel.RecordButtonText, Mode=OneWay}" />
                         </StackPanel>
                     </Button>
+                    <StackPanel HorizontalAlignment="Center" Orientation="Horizontal" Spacing="8">
+                        <Border Style="{StaticResource KeycapStyle}">
+                            <TextBlock Style="{StaticResource KeycapTextStyle}" Text="{x:Bind ViewModel.HotkeyGesture, Mode=OneWay}" />
+                        </Border>
+                        <TextBlock Style="{StaticResource ShortcutLabelStyle}" Text="{x:Bind ViewModel.HotkeyDescription, Mode=OneWay}" />
+                    </StackPanel>
+                    </StackPanel>
                 </StackPanel>
             </Border>
 
-            <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       Style="{StaticResource CaptionTextBlockStyle}"
-                       Opacity="{x:Bind local:XBind.OpaqueIf(ViewModel.IsIdle), Mode=OneWay}"
-                       TextWrapping="WrapWholeWords">
-                Pick speakers or headphones to record everything your PC plays, or a microphone to record your voice.
-                Audio is written straight to disk as you record, so long sessions are safe.
-            </TextBlock>
+            <!-- Uses the space under the card: shortcuts for after you stop recording -->
+            <StackPanel Padding="4,0" Spacing="8">
+                <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           Style="{StaticResource BodyStrongTextBlockStyle}"
+                           Text="After recording" />
+                <Grid ColumnSpacing="16" RowSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Border Style="{StaticResource KeycapStyle}">
+                            <TextBlock Style="{StaticResource KeycapTextStyle}" Text="Ctrl+C" />
+                        </Border>
+                        <TextBlock Style="{StaticResource ShortcutLabelStyle}" Text="Copy as MP3" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                        <Border Style="{StaticResource KeycapStyle}">
+                            <TextBlock Style="{StaticResource KeycapTextStyle}" Text="Ctrl+S" />
+                        </Border>
+                        <TextBlock Style="{StaticResource ShortcutLabelStyle}" Text="Save to a file" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="4">
+                        <Border Style="{StaticResource KeycapStyle}">
+                            <TextBlock Style="{StaticResource KeycapTextStyle}" Text="[" />
+                        </Border>
+                        <Border Style="{StaticResource KeycapStyle}">
+                            <TextBlock Style="{StaticResource KeycapTextStyle}" Text="]" />
+                        </Border>
+                        <TextBlock Margin="4,0,0,0" Style="{StaticResource ShortcutLabelStyle}" Text="Trim at the playhead" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="4">
+                        <Border Style="{StaticResource KeycapStyle}">
+                            <TextBlock Style="{StaticResource KeycapTextStyle}" Text="←" />
+                        </Border>
+                        <Border Style="{StaticResource KeycapStyle}">
+                            <TextBlock Style="{StaticResource KeycapTextStyle}" Text="→" />
+                        </Border>
+                        <TextBlock Margin="4,0,0,0" Style="{StaticResource ShortcutLabelStyle}" Text="Move the playhead" />
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
         </StackPanel>
     </Grid>
 </UserControl>

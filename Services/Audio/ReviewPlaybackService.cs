@@ -16,6 +16,7 @@ public sealed class ReviewPlaybackService : IDisposable
     private SpoolSampleProvider? _spool;
     private DownmixSampleProvider? _mix;
     private IWavePlayer? _output;
+    private long _rangeStart;
 
     /// <summary>Raised when playback ends (reached the end, device error, or output device removed).</summary>
     public event EventHandler<Exception?>? PlaybackStopped;
@@ -30,10 +31,25 @@ public sealed class ReviewPlaybackService : IDisposable
 
     public double Progress => _spool is null || _spool.TotalFrames == 0 ? 0 : (double)_spool.PositionFrames / _spool.TotalFrames;
 
+    public long TotalFrames => _spool?.TotalFrames ?? 0;
+
+    /// <summary>Limits playback to the trimmed selection (absolute frames).</summary>
+    public void SetRange(long startFrame, long endFrame)
+    {
+        if (_spool is null)
+        {
+            return;
+        }
+
+        _rangeStart = Math.Clamp(startFrame, 0, _spool.TotalFrames);
+        _spool.EndLimitFrames = Math.Clamp(endFrame, _rangeStart, _spool.TotalFrames);
+    }
+
     public void Load(SpoolSession session, float gain)
     {
         Unload();
         _spool = new SpoolSampleProvider(session);
+        _rangeStart = 0;
         _mix = new DownmixSampleProvider(_spool, session.Format.ChannelMask) { Gain = gain };
     }
 
@@ -60,9 +76,10 @@ public sealed class ReviewPlaybackService : IDisposable
             return;
         }
 
-        if (_spool.PositionFrames >= _spool.TotalFrames)
+        long position = _spool.PositionFrames;
+        if (position < _rangeStart || position >= _spool.EndLimitFrames)
         {
-            _spool.PositionFrames = 0; // restart from the top after reaching the end
+            _spool.PositionFrames = _rangeStart; // start (or restart) at the trim-in point
         }
 
         _output ??= CreateOutput(new SampleToWaveProvider(_mix));

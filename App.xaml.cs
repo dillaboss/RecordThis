@@ -24,6 +24,7 @@ public partial class App : Application
     protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
     {
         // Services
+        var settings = new SettingsService();
         var spools = new SpoolFileManager();
         var capture = new WasapiAudioCaptureService(spools);
         var devices = new WindowsDeviceManager();
@@ -34,8 +35,8 @@ public partial class App : Application
         var clipboard = new ClipboardService(() => _window is null ? 0 : WindowNative.GetWindowHandle(_window));
 
         // View models
-        var captureVm = new CaptureViewModel(capture, devices, spools, power);
-        var reviewVm = new ReviewViewModel(export, spools, picker, dialogs, clipboard);
+        var captureVm = new CaptureViewModel(capture, devices, spools, power, settings);
+        var reviewVm = new ReviewViewModel(export, spools, picker, clipboard, settings);
         var mainVm = new MainViewModel(captureVm, reviewVm, capture, devices, power);
 
         _window = new MainWindow(mainVm, dialogs);

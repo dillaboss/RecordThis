@@ -15,6 +15,7 @@ public sealed class SpoolSampleProvider : ISampleProvider, IDisposable
     private readonly object _gate = new();
     private byte[] _bytes = [];
     private long _positionFrames;
+    private long _endLimitFrames;
     private bool _disposed;
 
     public SpoolSampleProvider(SpoolSession session)
@@ -30,6 +31,7 @@ public sealed class SpoolSampleProvider : ISampleProvider, IDisposable
 
         // A crash can leave a trailing partial frame; ignore it.
         TotalFrames = _stream.Length / _format.BlockAlign;
+        _endLimitFrames = TotalFrames;
         WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(_format.SampleRate, _format.Channels);
     }
 
@@ -58,6 +60,25 @@ public sealed class SpoolSampleProvider : ISampleProvider, IDisposable
         }
     }
 
+    /// <summary>Reading stops at this frame (absolute). Used for the trim-out point. Thread-safe.</summary>
+    public long EndLimitFrames
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _endLimitFrames;
+            }
+        }
+        set
+        {
+            lock (_gate)
+            {
+                _endLimitFrames = Math.Clamp(value, 0, TotalFrames);
+            }
+        }
+    }
+
     public int Read(float[] buffer, int offset, int count)
     {
         lock (_gate)
@@ -68,7 +89,7 @@ public sealed class SpoolSampleProvider : ISampleProvider, IDisposable
             }
 
             int channels = _format.Channels;
-            long frames = Math.Min(count / channels, TotalFrames - _positionFrames);
+            long frames = Math.Min(count / channels, _endLimitFrames - _positionFrames);
             if (frames <= 0)
             {
                 return 0;

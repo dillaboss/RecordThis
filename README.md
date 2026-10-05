@@ -1,6 +1,6 @@
 # RecordThis
 
-A Windows 11 audio recorder. It records either a microphone or **everything a playback device plays** (WASAPI loopback), writes audio straight to disk as it records, then lets you preview and save a standard WAV file.
+A Windows 11 audio recorder built from the "EchoCapture" design spec (v2.0). It records either a microphone or **everything a playback device plays** (WASAPI loopback), writes audio straight to disk as it records, then lets you preview and save a standard WAV file.
 
 > **Status: untested.** This code was written without access to a Windows machine or the .NET SDK, so it has never been compiled or run. Expect a few build errors (most likely in XAML bindings) and treat all performance figures in the spec as unverified.
 
@@ -57,12 +57,15 @@ The EXE is unsigned, so Windows SmartScreen will warn on first launch: choose **
 
 ## Using it
 
-1. Pick a source. Speakers and headphones record everything the PC plays (loopback); microphones record input.
-2. Press **Start recording**. The level meter and timer run while recording.
-3. Press **Stop recording**. The Review screen shows the waveform; click or drag it to scrub, or use the arrow keys.
-4. Choose a sample rate (44.1 or 48 kHz) and bit depth (16-bit dithered or 24-bit), then **Save As (.wav)**.
+1. Choose **System audio** (everything a speaker or headphone output plays) or **Microphone**, then pick the device.
+2. Press **Start recording**, or press **Ctrl+Alt+R** from any app, even while RecordThis is minimized.
+3. Press **Stop recording** (or Ctrl+Alt+R again). The review screen opens.
+4. Trim if needed: drag the bracket handles at either end of the waveform, click **Trim silence** to snap them to where the sound starts and ends, or press **[** / **]** to set them at the playhead.
+5. **Copy MP3** (Ctrl+C) puts the recording on the clipboard as a file for pasting into Discord, WhatsApp and similar apps. **Save As** (Ctrl+S) writes a WAV or MP3, depending on the Format setting.
 
-If RecordThis crashes, loses power or is force-closed mid-recording, the next launch offers to recover the audio.
+Whichever of Copy or Save you used last becomes the highlighted button. **Discard** can be undone for 5 seconds from the banner on the recording screen.
+
+RecordThis remembers your source tab, devices and export settings in `%LOCALAPPDATA%\RecordThis\settings.json`. If it crashes, loses power or is force-closed mid-recording, the next launch offers to recover the audio.
 
 ## How the spec maps to the code
 
@@ -80,6 +83,9 @@ If RecordThis crashes, loses power or is force-closed mid-recording, the next la
 | Capture view / view model | `Views/CaptureView.xaml`, `ViewModels/CaptureViewModel.cs` |
 | Review view / view model | `Views/ReviewView.xaml`, `Views/WaveformView.xaml`, `ViewModels/ReviewViewModel.cs` |
 | Mica Alt window, title bar, close protection | `MainWindow.xaml(.cs)` |
+| Global Ctrl+Alt+R shortcut | `Services/Platform/HotkeyService.cs` |
+| Copy to clipboard (as a file) | `Services/UI/ClipboardService.cs` |
+| Remembered settings | `Services/Storage/SettingsService.cs` |
 
 ### Recording pipeline
 
@@ -108,6 +114,7 @@ These are deliberate, and each one is worth knowing about:
 - **Meter only while recording.** The live meter runs during capture, not while idle.
 - **Playback fallback.** If WASAPI shared mode rejects the preview stream's format, playback falls back to `WaveOutEvent` (adds the `NAudio.WinMM` package).
 - **Sleep on Modern Standby devices.** `PowerModeChanged` is reliable for classic S3 sleep and hibernate. On some Modern Standby (S0ix) laptops the notification may arrive late or not at all; crash recovery covers that case.
+- **Global shortcut.** Ctrl+Alt+R is used because it's rarely taken. On keyboard layouts where AltGr+R types a character, or if another app already owns the shortcut, the recording screen shows it as unavailable.
 - **WAV size limit.** WAV files max out at 4 GB (about 6 hours of 48 kHz/24-bit stereo). Longer recordings are refused at export with a message suggesting a smaller format.
 
 ## Troubleshooting

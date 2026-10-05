@@ -20,14 +20,17 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
     private static readonly TimeSpan MeterInterval = TimeSpan.FromMilliseconds(16);
     private static readonly TimeSpan RefreshDebounce = TimeSpan.FromMilliseconds(400);
     private static readonly TimeSpan SuspendStopTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan UndoWindow = TimeSpan.FromSeconds(5);
 
     private readonly IAudioCaptureService _capture;
     private readonly WindowsDeviceManager _devices;
     private readonly SpoolFileManager _spools;
     private readonly PowerEventService _power;
+    private readonly SettingsService _settings;
     private readonly DispatcherQueue _dispatcher;
     private readonly DispatcherQueueTimer _meterTimer;
     private readonly DispatcherQueueTimer _refreshTimer;
+    private readonly DispatcherQueueTimer _noticeTimer;
     private readonly HashSet<Guid> _handledSessions = [];
     private readonly Queue<SpoolSession> _recoveryQueue = new();
 
@@ -35,17 +38,22 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
     private long _clipUntil;
     private bool _refreshPending;
     private bool _disposed;
+    private IReadOnlyList<AudioDeviceModel> _allDevices = [];
+    private CaptureResult? _pendingDiscard;
 
     public CaptureViewModel(
         IAudioCaptureService capture,
         WindowsDeviceManager devices,
         SpoolFileManager spools,
-        PowerEventService power)
+        PowerEventService power,
+        SettingsService settings)
     {
         _capture = capture;
         _devices = devices;
         _spools = spools;
         _power = power;
+        _settings = settings;
+        _sourceKind = Enum.TryParse(settings.Current.SourceKind, out DeviceKind kind) ? kind : DeviceKind.Output;
         _dispatcher = DispatcherQueue.GetForCurrentThread()
                       ?? throw new InvalidOperationException("CaptureViewModel must be created on the UI thread.");
 
@@ -57,6 +65,10 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
         _refreshTimer.Interval = RefreshDebounce;
         _refreshTimer.IsRepeating = false;
         _refreshTimer.Tick += (_, _) => OnRefreshDue();
+
+        _noticeTimer = _dispatcher.CreateTimer();
+        _noticeTimer.IsRepeating = false;
+        _noticeTimer.Tick += (_, _) => Notice = null;
 
         _capture.Stopped += OnCaptureStopped;
         _devices.DevicesChanged += OnDevicesChanged;
@@ -111,6 +123,26 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
     private Notice? _notice;
 
     public bool HasNotice => Notice is not null;
+
+    /// <summary>Which tab is showing: speakers/headphones (loopback) or microphones.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SourcePlaceholder))]
+    private DeviceKind _sourceKind;
+
+    public string SourcePlaceholder => SourceKind == DeviceKind.Output
+        ? "No speakers or headphones found"
+        : "No microphones found";
+
+    [ObservableProperty]
+    private string _hotkeyGesture = "Ctrl+Alt+R";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HotkeyDescription))]
+    private bool _isHotkeyAvailable;
+
+    public string HotkeyDescription => IsHotkeyAvailable
+        ? "Start or stop recording from any app"
+        : "Unavailable: another app is already using this shortcut";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(RecoveryText))]
@@ -311,10 +343,31 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedDeviceChanged(AudioDeviceModel? value)
     {
+        if (value is not null)
+        {
+            if (value.Kind == DeviceKind.Output)
+            {
+                _settings.Current.LastOutputDeviceId = value.Id;
+            }
+            else
+            {
+                _settings.Current.LastInputDeviceId = value.Id;
+            }
+
+            _settings.Save();
+        }
+
         if (!IsRecording)
         {
             UpdateSelectionDetails();
         }
+    }
+
+    partial void OnSourceKindChanged(DeviceKind value)
+    {
+        _settings.Current.SourceKind = value.ToString();
+        _settings.Save();
+        ApplySourceFilter();
     }
 
     private void UpdateSelectionDetails()
@@ -355,10 +408,9 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
 
     private void RefreshDevices()
     {
-        IReadOnlyList<AudioDeviceModel> latest;
         try
         {
-            latest = _devices.GetDevices();
+            _allDevices = _devices.GetDevices();
         }
         catch (Exception ex)
         {
@@ -366,24 +418,9 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (latest.SequenceEqual(Devices))
-        {
-            return;
-        }
+        ApplySourceFilter();
 
-        string? keepId = SelectedDevice?.Id;
-        Devices.Clear();
-        foreach (var device in latest)
-        {
-            Devices.Add(device);
-        }
-
-        // Keep the user's choice if it still exists; otherwise the default speakers (loopback).
-        SelectedDevice = latest.FirstOrDefault(d => d.Id == keepId)
-                         ?? latest.FirstOrDefault(d => d.IsDefault && d.IsLoopback)
-                         ?? latest.FirstOrDefault();
-
-        if (latest.Count == 0)
+        if (_allDevices.Count == 0)
         {
             Notice = new Notice(
                 "No audio devices found",
@@ -391,6 +428,35 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
                 NoticeSeverity.Warning,
                 NoticeAction.OpenSoundSettings,
                 "Open Sound settings");
+        }
+    }
+
+    /// <summary>Shows only the current tab's devices and picks the best one: current, last used, then Windows default.</summary>
+    private void ApplySourceFilter()
+    {
+        var visible = _allDevices.Where(d => d.Kind == SourceKind).ToList();
+        string? keepId = SelectedDevice?.Kind == SourceKind ? SelectedDevice.Id : null;
+        string? rememberedId = SourceKind == DeviceKind.Output
+            ? _settings.Current.LastOutputDeviceId
+            : _settings.Current.LastInputDeviceId;
+
+        if (!visible.SequenceEqual(Devices))
+        {
+            Devices.Clear();
+            foreach (var device in visible)
+            {
+                Devices.Add(device);
+            }
+        }
+
+        SelectedDevice = visible.FirstOrDefault(d => d.Id == keepId)
+                         ?? visible.FirstOrDefault(d => d.Id == rememberedId)
+                         ?? visible.FirstOrDefault(d => d.IsDefault)
+                         ?? visible.FirstOrDefault();
+
+        if (SelectedDevice is null)
+        {
+            UpdateSelectionDetails();
         }
     }
 
@@ -447,7 +513,74 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
     // ---------------------------------------------------------------- Notices
 
     [RelayCommand]
-    private void RunNoticeAction() => ShellLauncher.Run(Notice);
+    private void RunNoticeAction()
+    {
+        if (Notice?.Action == NoticeAction.UndoDiscard && _pendingDiscard is { } discarded)
+        {
+            _pendingDiscard = null;
+            Notice = null;
+            RecordingFinished?.Invoke(this, discarded with { Reason = StopReason.User, Error = null });
+            return;
+        }
+
+        ShellLauncher.Run(Notice);
+    }
+
+    partial void OnNoticeChanged(Notice? value)
+    {
+        _noticeTimer.Stop();
+
+        // The undo chance ends as soon as its notice is gone or replaced.
+        if (_pendingDiscard is not null && value?.Action != NoticeAction.UndoDiscard)
+        {
+            FinalizePendingDiscard();
+        }
+
+        if (value?.Lifetime is { } lifetime)
+        {
+            _noticeTimer.Interval = lifetime;
+            _noticeTimer.Start();
+        }
+    }
+
+    /// <summary>Called when the review screen discards an unsaved recording: keep the spool for 5 seconds so it can be undone.</summary>
+    public void OfferUndoDiscard(CaptureResult discarded)
+    {
+        FinalizePendingDiscard();
+        _pendingDiscard = discarded;
+        Notice = new Notice("Recording discarded", string.Empty, NoticeSeverity.Informational, NoticeAction.UndoDiscard, "Undo")
+        {
+            Lifetime = UndoWindow,
+        };
+    }
+
+    private void FinalizePendingDiscard()
+    {
+        if (_pendingDiscard is { } discarded)
+        {
+            _pendingDiscard = null;
+            _spools.Delete(discarded.Session);
+        }
+    }
+
+    /// <summary>Reported by the window once it has tried to register the global shortcut.</summary>
+    public void SetHotkeyStatus(bool available, string gesture)
+    {
+        HotkeyGesture = gesture;
+        IsHotkeyAvailable = available;
+    }
+
+    /// <summary>Global shortcut: start or stop, if that's possible right now.</summary>
+    public bool TryToggleRecording()
+    {
+        if (!ToggleRecordingCommand.CanExecute(null))
+        {
+            return false;
+        }
+
+        ToggleRecordingCommand.Execute(null);
+        return true;
+    }
 
     public void Dispose()
     {
@@ -459,6 +592,8 @@ public sealed partial class CaptureViewModel : ObservableObject, IDisposable
         _disposed = true;
         _meterTimer.Stop();
         _refreshTimer.Stop();
+        _noticeTimer.Stop();
+        FinalizePendingDiscard();
         _capture.Stopped -= OnCaptureStopped;
         _devices.DevicesChanged -= OnDevicesChanged;
         _devices.DeviceUnavailable -= OnDeviceUnavailable;
