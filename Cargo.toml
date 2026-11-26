@@ -1,0 +1,86 @@
+[package]
+name = "recordthis"
+version = "2.0.0"
+edition = "2021"
+description = "Record a microphone or everything your PC plays, then trim and save it."
+license = "Apache-2.0"
+build = "build.rs"
+default-run = "RecordThis"
+
+[[bin]]
+name = "RecordThis"
+path = "src/main.rs"
+
+# Renders every screen state to PNG with Slint's software renderer (used for design review, runs anywhere).
+[[bin]]
+name = "screenshots"
+path = "tools/screenshots.rs"
+required-features = ["screenshots"]
+
+# End-to-end controller test against the simulated devices (non-Windows, no display needed).
+[[bin]]
+name = "selftest"
+path = "tools/selftest.rs"
+required-features = ["screenshots"]
+
+[features]
+default = []
+screenshots = ["dep:png"]
+
+[dependencies]
+slint = { version = "1.19", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "software-renderer-systemfonts", "accessibility", "raw-window-handle-06"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+rubato = "5.1"
+png = { version = "0.18", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.18", default-features = false }
+raw-window-handle = "0.6"
+windows-core = "0.62"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_MediaFoundation",
+    "Win32_Media_Multimedia",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+    "UI",
+    "UI_ViewManagement",
+] }
+
+[build-dependencies]
+slint-build = "1.19"
+embed-resource = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+strip = true
+
+# DSP code stays fast in debug builds so local testing feels real-time.
+[profile.dev.package."*"]
+opt-level = 2
+[profile.dev]
+opt-level = 1

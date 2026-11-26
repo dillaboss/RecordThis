@@ -1,0 +1,184 @@
+import { Theme } from "theme.slint";
+
+component Grip inherits Rectangle {
+    in property <bool> active;
+    width: 10px;
+    height: 30px;
+    border-radius: 5px;
+    background: Theme.text;
+    drop-shadow-blur: 4px;
+    drop-shadow-color: #00000066;
+    Rectangle {
+        width: 2px;
+        height: 12px;
+        x: 3px;
+        border-radius: 1px;
+        background: Theme.window-bg.with-alpha(0.55);
+    }
+    Rectangle {
+        width: 2px;
+        height: 12px;
+        x: 5px;
+        border-radius: 1px;
+        background: Theme.window-bg.with-alpha(0.55);
+    }
+}
+
+component TimeTag inherits Rectangle {
+    in property <string> text;
+    height: 20px;
+    width: tag-text.preferred-width + 12px;
+    border-radius: 4px;
+    background: Theme.text;
+    tag-text := Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.window-bg;
+    }
+}
+
+// Peak-envelope waveform with playhead and trim handles. Click or drag the body to scrub; drag a
+// handle to trim. Selection outside the handles is dimmed.
+export component Waveform inherits Rectangle {
+    in property <string> commands;
+    in property <int> buckets: 480;
+    in property <float> progress;
+    in property <float> trim-start: 0;
+    in property <float> trim-end: 1;
+    in property <float> min-selection: 0.01;
+    in property <string> start-label;
+    in property <string> end-label;
+    in property <bool> enabled: true;
+    callback seek(float);
+    callback trim(float, float);
+
+    // 0 none, 1 scrub, 2 trim start, 3 trim end
+    private property <int> drag: 0;
+    private property <length> grab: 14px;
+    private property <length> sx: root.width * root.trim-start;
+    private property <length> ex: root.width * root.trim-end;
+    private property <int> hover-zone: ta.has-hover && root.enabled ? root.zone(ta.mouse-x) : 0;
+
+    pure function zone(x: length) -> int {
+        if abs(x - root.sx) <= root.grab || abs(x - root.ex) <= root.grab {
+            return abs(x - root.sx) <= abs(x - root.ex) ? 2 : 3;
+        }
+        return 1;
+    }
+
+    function apply(x: length) {
+        if root.width <= 0px {
+            return;
+        }
+        let f = clamp(x / root.width, 0, 1);
+        if root.drag == 1 {
+            root.seek(f);
+        } else if root.drag == 2 {
+            root.trim(clamp(f, 0, max(0, root.trim-end - root.min-selection)), root.trim-end);
+        } else if root.drag == 3 {
+            root.trim(root.trim-start, clamp(f, min(1, root.trim-start + root.min-selection), 1));
+        }
+    }
+
+    border-radius: 6px;
+    background: Theme.inset;
+    clip: true;
+    accessible-role: slider;
+    accessible-label: "Waveform. Space plays or pauses, left and right arrows move the playhead, open and close square brackets set the trim points.";
+    accessible-value: round(root.progress * 100) + "%";
+
+    // Played portion
+    Rectangle {
+        x: root.sx;
+        width: max(0px, min(root.width * root.progress, root.ex) - root.sx);
+        background: Theme.accent.with-alpha(0.10);
+    }
+
+    Rectangle {
+        y: root.height / 2;
+        height: 1px;
+        background: Theme.text-tertiary.with-alpha(0.35);
+    }
+
+    Path {
+        x: 0;
+        y: 10px;
+        width: root.width;
+        height: root.height - 20px;
+        commands: root.commands;
+        viewbox-width: root.buckets;
+        viewbox-height: 200;
+        fit: fill;
+        fill: Theme.accent;
+        stroke-width: 0px;
+    }
+
+    // Trimmed-away regions
+    Rectangle {
+        x: 0;
+        width: root.sx;
+        background: Theme.smoke;
+    }
+    Rectangle {
+        x: root.ex;
+        width: root.width - root.ex;
+        background: Theme.smoke;
+    }
+
+    // Playhead
+    Rectangle {
+        x: clamp(root.width * root.progress - 1px, 0px, root.width - 2px);
+        width: 2px;
+        background: Theme.text;
+    }
+
+    // Handles: a bar along the edge of the selection with a grip in the middle.
+    Rectangle {
+        x: clamp(root.sx - 1.5px, 0px, root.width - 3px);
+        width: 3px;
+        background: Theme.text;
+    }
+    Grip {
+        x: clamp(root.sx - 5px, 0px, root.width - 10px);
+        y: (root.height - self.height) / 2;
+    }
+    Rectangle {
+        x: clamp(root.ex - 1.5px, 0px, root.width - 3px);
+        width: 3px;
+        background: Theme.text;
+    }
+    Grip {
+        x: clamp(root.ex - 5px, 0px, root.width - 10px);
+        y: (root.height - self.height) / 2;
+    }
+
+    if root.drag == 2 || (root.drag == 0 && root.hover-zone == 2): TimeTag {
+        text: root.start-label;
+        x: clamp(root.sx + 8px, 4px, root.width - self.width - 4px);
+        y: 6px;
+    }
+    if root.drag == 3 || (root.drag == 0 && root.hover-zone == 3): TimeTag {
+        text: root.end-label;
+        x: clamp(root.ex - self.width - 8px, 4px, root.width - self.width - 4px);
+        y: 6px;
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.drag >= 2 || root.hover-zone >= 2 ? MouseCursor.ew-resize : MouseCursor.default;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.drag = root.zone(self.mouse-x);
+                root.apply(self.mouse-x);
+            } else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                root.drag = 0;
+            }
+        }
+        moved => {
+            if root.drag != 0 {
+                root.apply(self.mouse-x);
+            }
+        }
+    }
+}

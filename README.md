@@ -1,124 +1,102 @@
-# RecordThis
+# RecordThis (Rust)
 
-A Windows 11 audio recorder built from the "EchoCapture" design spec (v2.0). It records either a microphone or **everything a playback device plays** (WASAPI loopback), writes audio straight to disk as it records, then lets you preview and save a standard WAV file.
+A Windows 11 audio recorder. It records a microphone, or **everything a speaker or headphone output plays** (WASAPI loopback), writing straight to disk as it goes. Then you trim the recording and copy it (to paste into Discord, WhatsApp, Teams…) or save it as MP3 or WAV.
 
-> **Status: untested.** This code was written without access to a Windows machine or the .NET SDK, so it has never been compiled or run. Expect a few build errors (most likely in XAML bindings) and treat all performance figures in the spec as unverified.
+This is a Rust + [Slint](https://slint.dev) port of the original C#/WinUI 3 app, with a reworked UI.
+
+| Recording | Review |
+|---|---|
+| ![Recording screen](docs/screenshots/record.png) | ![Review screen](docs/screenshots/review.png) |
+
+> **Status:** the audio pipeline, file handling and app logic are covered by unit tests and an end-to-end self-test against simulated devices, and the Windows build compiles cleanly. **The Windows-specific layer (WASAPI, Media Foundation MP3, clipboard, hotkey, sleep handling, title bar, taskbar badge) has not yet been run on a real Windows PC.** See [Testing checklist](#testing-checklist).
 
 ## Requirements
 
-- Windows 11 (build 22000 or later), x64 or ARM64
-- Visual Studio 2022 17.8+ with the **.NET desktop development** workload and the **Windows App SDK C# Templates** component, or the .NET 8 SDK on its own
-- Windows 10/11 SDK 10.0.22621 or later
+- Windows 10 (1903+) or Windows 11, x64 or ARM64
+- To build: [Rust](https://rustup.rs) (stable) with the MSVC toolchain, and Visual Studio Build Tools with the "Desktop development with C++" workload. Nothing else; there's no runtime to install.
 
 ## Build and run
 
-From the project folder:
-
 ```powershell
-# Debug build (x64)
-dotnet build -p:Platform=x64
-
-# Run
-dotnet run -p:Platform=x64
-
-# ARM64
-dotnet build -p:Platform=ARM64
+cargo run --release            # build and start
+cargo build --release          # → target\release\RecordThis.exe (single file, no dependencies)
 ```
 
-In Visual Studio, open `RecordThis.csproj`, pick **x64** (or ARM64) in the platform dropdown, and press F5. The app is unpackaged (`WindowsPackageType=None`), so no MSIX deployment step is needed.
+ARM64: `rustup target add aarch64-pc-windows-msvc`, then `cargo build --release --target aarch64-pc-windows-msvc`.
 
-## Publish a single self-contained .exe
-
-```powershell
-dotnet publish -c Release -r win-x64 -p:Platform=x64
-dotnet publish -c Release -r win-arm64 -p:Platform=ARM64
-```
-
-Output lands in `bin\Release\net8.0-windows10.0.22621.0\<rid>\publish\`. The Windows App SDK runtime and .NET runtime are bundled, so the target PC needs nothing installed.
-
-If the single-file build fails to start (WinUI 3 single-file support has historically been fragile), publish as a folder instead:
-
-```powershell
-dotnet publish -c Release -r win-x64 -p:Platform=x64 -p:PublishSingleFile=false
-```
-
-## Build online with GitHub Actions (no Visual Studio)
-
-The project includes `.github/workflows/build.yml`, which builds RecordThis on a GitHub-hosted Windows machine.
-
-1. Create a new repository on github.com and upload the contents of this folder to it (including the `.github` folder).
-2. Open the **Actions** tab. A build starts automatically on every upload; you can also start one with **Run workflow**.
-3. When it finishes (about 5–10 minutes), open the run and download an artifact:
-   - `RecordThis-win-x64`: the single-file EXE for most PCs
-   - `RecordThis-win-x64-folder`: the fallback folder build, if the single EXE won't start
-   - `-win-arm64` versions for ARM PCs (e.g. Snapdragon laptops)
-
-The EXE is unsigned, so Windows SmartScreen will warn on first launch: choose **More info → Run anyway**.
+**GitHub Actions:** `.github/workflows/build.yml` runs the tests and builds x64 and ARM64 EXEs on every push. Download them from the run's **Artifacts**. The EXE is unsigned, so SmartScreen will warn on first launch (**More info → Run anyway**).
 
 ## Using it
 
-1. Choose **System audio** (everything a speaker or headphone output plays) or **Microphone**, then pick the device.
-2. Press **Start recording**, or press **Ctrl+Alt+R** from any app, even while RecordThis is minimized.
-3. Press **Stop recording** (or Ctrl+Alt+R again). The review screen opens.
-4. Trim if needed: drag the bracket handles at either end of the waveform, click **Trim silence** to snap them to where the sound starts and ends, or press **[** / **]** to set them at the playhead.
-5. **Copy MP3** (Ctrl+C) puts the recording on the clipboard as a file for pasting into Discord, WhatsApp and similar apps. **Save As** (Ctrl+S) writes a WAV or MP3, depending on the Format setting.
+1. Choose **System audio** or **Microphone**, then the device. The level meter is live for system audio; for microphones press **Test mic**.
+2. **Start recording**, or press **Ctrl+Alt+R** from any app (the taskbar button shows a red dot while recording).
+3. **Stop recording** (or Ctrl+Alt+R) opens the review screen.
+4. Trim by dragging the handles, **Trim silence**, or **[** / **]** at the playhead. **Space** plays and pauses, **←/→** move the playhead, **Home/End** jump to the trim points.
+5. Pick **MP3** or **WAV**, then **Copy** (Ctrl+C, puts the file on the clipboard) or **Save…** (Ctrl+S). The format applies to both.
 
-Whichever of Copy or Save you used last becomes the highlighted button. **Discard** can be undone for 5 seconds from the banner on the recording screen.
+Settings live in `%LOCALAPPDATA%\RecordThis\settings.json` (same file as the C# version). If the app crashes or loses power mid-recording, the next launch offers to recover the audio, including recordings left behind by the C# version.
 
-RecordThis remembers your source tab, devices and export settings in `%LOCALAPPDATA%\RecordThis\settings.json`. If it crashes, loses power or is force-closed mid-recording, the next launch offers to recover the audio.
+## What changed from the C# version
 
-## How the spec maps to the code
+**Performance and size.** One native EXE with no .NET or Windows App SDK runtime to load, so it should start almost instantly and use far less memory (not yet measured on Windows). The audio path is the same design (raw packets to disk, streamed export), now with no garbage collector involved.
 
-| Spec component | File |
+**UI and UX:**
+- The level meter is live before recording (system audio automatically, microphones on demand), with separate L/R bars, a dB scale, peak hold and a CLIP flag.
+- The developer jargon ("WASAPI Loopback") and the off-screen shortcut cheat sheet are gone; shortcuts are shown on the buttons they trigger.
+- While recording: red **Stop recording** button with the elapsed time, "● Recording 0:42" in the title, and a red dot on the taskbar button.
+- Proper app icon (the C# build showed the generic EXE icon).
+- Review: "Recording · 0:08" header, times that fit their length (0:08, 4:12, 1:02:33), grip-style trim handles that show their times while dragging, and "No silence to trim" instead of an unexplained disabled button.
+- Export: an **MP3 | WAV** toggle that applies to Copy *and* Save (Copy used to be MP3 regardless). Discard is a quiet button set apart from Copy/Save, and becomes **New recording** once you've copied or saved.
+- Results ("Copied 412 KB MP3", "Saved …  · Show in folder") appear right under the buttons.
+- Compact window, follows Windows light/dark mode and your accent colour, and the title bar is coloured to blend in. (Slint can't draw Mica, so the background is a solid Mica-like colour.)
+
+**Behaviour:**
+- MP3 still uses Windows' built-in encoder, but it's loaded on demand, so the app also starts on Windows "N" editions. There, Copy falls back to WAV and Save MP3 explains how to get the encoder.
+- After sleep/resume or a device change, the idle meter reconnects by itself.
+- Closing with a recording you copied but didn't save no longer asks "Save before closing?".
+
+## Code map
+
+| Area | File |
 |---|---|
-| WASAPI capture / loopback, silence gap watchdog | `Services/Audio/WasapiAudioCaptureService.cs` |
-| Zero-frame generator | `Services/Audio/SilenceInjectionBuffer.cs` |
-| ITU-R BS.775 downmix coefficients | `Services/Audio/DownmixMatrix.cs`, `Pipeline/DownmixSampleProvider.cs` |
-| WdlResampler to 44.1/48 kHz | `Pipeline/ExactLengthResampler.cs` |
-| 16/24-bit PCM + RIFF writer | `Services/Audio/AudioExportService.cs` |
-| Device enumeration, hot-plug (`IMMNotificationClient`) | `Services/Devices/WindowsDeviceManager.cs` |
-| Disk spool + crash recovery | `Services/Storage/SpoolFileManager.cs` |
-| `PowerModeChanged` finalize-before-sleep | `Services/Platform/PowerEventService.cs` |
-| WASAPI error → user guidance (exclusive mode, privacy, etc.) | `Services/Audio/AudioErrorTranslator.cs` |
-| Capture view / view model | `Views/CaptureView.xaml`, `ViewModels/CaptureViewModel.cs` |
-| Review view / view model | `Views/ReviewView.xaml`, `Views/WaveformView.xaml`, `ViewModels/ReviewViewModel.cs` |
-| Mica Alt window, title bar, close protection | `MainWindow.xaml(.cs)` |
-| Global Ctrl+Alt+R shortcut | `Services/Platform/HotkeyService.cs` |
-| Copy to clipboard (as a file) | `Services/UI/ClipboardService.cs` |
-| Remembered settings | `Services/Storage/SettingsService.cs` |
+| WASAPI capture/loopback + silence watchdog, spool writing, live meter | `src/audio/capture.rs`, `src/platform/windows/audio.rs` |
+| Raw spool → float decoding | `src/audio/convert.rs`, `src/audio/reader.rs` |
+| ITU-R BS.775 downmix + clip-safe gain | `src/audio/downmix.rs` |
+| Exact-length sinc resampler (rubato) | `src/audio/resample.rs` |
+| 16-bit TPDF dither / 24-bit WAV writer | `src/audio/wav.rs` |
+| Export pipeline (WAV, MP3 via Media Foundation) | `src/audio/export.rs`, `src/platform/windows/mp3.rs` |
+| Waveform + silence detection | `src/audio/waveform.rs` |
+| Review playback | `src/audio/playback.rs` |
+| Device list + hot-plug (IMMNotificationClient) | `src/platform/windows/devices.rs` |
+| Hotkey, sleep, clipboard, shell, accent, title bar, taskbar | `src/platform/windows/shell.rs` |
+| Spool files + crash recovery, settings | `src/storage/` |
+| Error → user guidance | `src/errors.rs` |
+| Screen logic (the old view models) | `src/app/` |
+| UI | `ui/*.slint` |
 
-### Recording pipeline
+On other operating systems the `platform` module swaps in simulated devices (`src/platform/demo.rs`), so the whole app can be developed and tested anywhere:
 
-```
-WASAPI packet ──► spool file (%LOCALAPPDATA%\Temp\RecordThis_{guid}.raw, native mix format)
-     ▲                    + RecordThis_{guid}.json (format sidecar for recovery)
-     └─ watchdog: no packet for 1.5× buffer (150 ms) → write zero frames for the gap
-```
-
-### Export pipeline (all streamed from disk)
-
-```
-spool → float decode → BS.775 downmix (if >2 ch) → clip-safe gain → WdlResampler (sinc)
-      → 16-bit TPDF dither or 24-bit → WAV (.partial, renamed when complete)
+```sh
+cargo test --lib                                         # DSP, spool, settings, export
+cargo run --features screenshots --bin selftest          # end-to-end controller test, no display needed
+cargo run --features screenshots --bin screenshots out   # renders every screen state to PNG
 ```
 
-## Deviations from the spec
+## Testing checklist
 
-These are deliberate, and each one is worth knowing about:
+Things only a real Windows PC can confirm:
 
-- **Binary size and AOT.** The spec's under-28 MB Native AOT target isn't achievable here. NAudio's WASAPI layer relies on classic COM interop, which trimming and AOT break, so both are off. A self-contained WinUI 3 single-file build will be substantially larger than 28 MB.
-- **Level meter bug fixed.** The spec's sample `ComputePeak` checks `WaveFormatEncoding.IeeeFloat`, but WASAPI almost always reports `Extensible`, so the meter would sit at zero. `CaptureFormat.FromWaveFormat` reads the real sub-format from `WAVEFORMATEXTENSIBLE`.
-- **Downmix clipping.** The BS.775 coefficients sum above 1.0, so loud surround material can clip after fold-down. RecordThis measures the post-downmix peak and, only if it exceeds 0 dBFS, lowers the whole file to peak at −0.1 dBFS. The Review screen reports the reduction.
-- **Streaming preview.** The spec loads the recording into memory for review. RecordThis streams it from the spool instead, which keeps memory flat for long recordings.
-- **Watchdog precision.** Silence is inserted within roughly one 20 ms timer tick, not with literal zero drift. The anchor resets on every real packet, so error doesn't accumulate.
-- **Meter only while recording.** The live meter runs during capture, not while idle.
-- **Playback fallback.** If WASAPI shared mode rejects the preview stream's format, playback falls back to `WaveOutEvent` (adds the `NAudio.WinMM` package).
-- **Sleep on Modern Standby devices.** `PowerModeChanged` is reliable for classic S3 sleep and hibernate. On some Modern Standby (S0ix) laptops the notification may arrive late or not at all; crash recovery covers that case.
-- **Global shortcut.** Ctrl+Alt+R is used because it's rarely taken. On keyboard layouts where AltGr+R types a character, or if another app already owns the shortcut, the recording screen shows it as unavailable.
-- **WAV size limit.** WAV files max out at 4 GB (about 6 hours of 48 kHz/24-bit stereo). Longer recordings are refused at export with a message suggesting a smaller format.
+- [ ] System audio: meter moves while music plays; recording includes silent stretches at the right length
+- [ ] Microphone: Test mic; recording; privacy block shows the "Open privacy settings" banner
+- [ ] Unplug the device mid-recording → review screen with "device disconnected"
+- [ ] Ctrl+Alt+R while minimized; red dot on the taskbar button
+- [ ] Play / pause / seek / trim during playback
+- [ ] Copy MP3 → paste into Discord or Explorer
+- [ ] Save MP3 and WAV (16- and 24-bit; 44.1 and 48 kHz)
+- [ ] Sleep while recording → recording finalized, banner on wake
+- [ ] Kill the process mid-recording → recovery banner on next launch
+- [ ] Light/dark mode switch; accent colour; 100% / 150% scaling
 
-## Troubleshooting
+## Licence
 
-- **"Another app has exclusive control of this device."** Close the other app, or in Sound settings open the device's **Properties → Advanced** and clear *Allow applications to take exclusive control of this device*.
-- **"Windows is blocking microphone access."** Turn on *Let desktop apps access your microphone* under **Settings → Privacy & security → Microphone**.
-- **Package restore fails.** The package versions in `RecordThis.csproj` may be outdated. Update them to the latest stable Windows App SDK, CommunityToolkit.Mvvm and NAudio 2.x releases.
+RecordThis is Apache-2.0. Slint is used under its [royalty-free desktop licence](https://github.com/slint-ui/slint/blob/master/LICENSES/LicenseRef-Slint-Royalty-free-2.0.md) (which asks that the app credit Slint, e.g. on its website or in an About box) or GPLv3, at your choice.
