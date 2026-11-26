@@ -2,6 +2,7 @@ name: Build RecordThis
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -11,44 +12,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - rid: win-x64
-            platform: x64
-          - rid: win-arm64
-            platform: ARM64
+          - target: x86_64-pc-windows-msvc
+            name: win-x64
+            test: true
+          - target: aarch64-pc-windows-msvc
+            name: win-arm64
+            test: false
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          dotnet-version: 8.0.x
+          targets: ${{ matrix.target }}
 
-      # Works whether the files sit at the top of the repo or inside a RecordThis folder
-      - name: Find project
-        id: proj
-        shell: pwsh
-        run: |
-          $p = Get-ChildItem -Recurse -Filter RecordThis.csproj | Select-Object -First 1
-          if (-not $p) { throw "RecordThis.csproj not found. Check that the project files were uploaded." }
-          "path=$($p.FullName)" >> $env:GITHUB_OUTPUT
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      - name: Publish single-file EXE
-        id: single
-        continue-on-error: true
-        run: dotnet publish "${{ steps.proj.outputs.path }}" -c Release -r ${{ matrix.rid }} -p:Platform=${{ matrix.platform }} -o out/single
+      # DSP, spool, settings and export tests (they also run on Linux/macOS).
+      - name: Test
+        if: matrix.test
+        run: cargo test --lib --target ${{ matrix.target }}
 
-      - name: Upload single-file EXE
-        if: steps.single.outcome == 'success'
+      - name: Build release EXE
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: RecordThis-${{ matrix.rid }}
-          path: out/single/RecordThis.exe
-
-      - name: Publish folder version
-        run: dotnet publish "${{ steps.proj.outputs.path }}" -c Release -r ${{ matrix.rid }} -p:Platform=${{ matrix.platform }} -p:PublishSingleFile=false -o out/folder
-
-      - name: Upload folder version
-        uses: actions/upload-artifact@v4
-        with:
-          name: RecordThis-${{ matrix.rid }}-folder
-          path: out/folder
+          name: RecordThis-${{ matrix.name }}
+          path: target/${{ matrix.target }}/release/RecordThis.exe

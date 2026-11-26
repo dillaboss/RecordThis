@@ -1,0 +1,598 @@
+import { Theme } from "theme.slint";
+import { Btn, BtnKind, Card, KeyCap, SourceTabs, DeviceDropdown, Dropdown, Segmented, LevelMeter, Spinner, ProgressBar, Banner, StatusLine, NoticeData, DeviceItem } from "widgets.slint";
+import { Waveform } from "waveform.slint";
+
+export { Theme, NoticeData, DeviceItem }
+
+export global CaptureState {
+    in property <int> source-kind;
+    in property <[DeviceItem]> devices;
+    in property <int> selected-device: -1;
+    in property <string> placeholder: "No speakers or headphones found";
+    in property <string> format-text;
+    in property <bool> recording;
+    in property <bool> busy;
+    in property <string> elapsed-text: "0:00";
+    in property <float> level-left;
+    in property <float> level-right;
+    in property <float> hold-left;
+    in property <float> hold-right;
+    in property <bool> clipping;
+    in property <string> level-text: "—";
+    in property <bool> meter-live;
+    in property <bool> mono;
+    in property <bool> mic-testing;
+    in property <string> hotkey-gesture: "Ctrl+Alt+R";
+    in property <bool> hotkey-available: true;
+    in property <NoticeData> recovery;
+    in property <NoticeData> notice;
+
+    callback select-source(int);
+    callback select-device(int);
+    callback toggle-recording();
+    callback toggle-mic-test();
+    callback recover();
+    callback discard-recovery();
+    callback notice-action();
+    callback dismiss-notice();
+}
+
+export global ReviewState {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> waveform;
+    in property <int> buckets: 480;
+    in property <bool> analyzing;
+    in property <float> progress;
+    in property <string> position-text: "0:00";
+    in property <string> duration-text: "0:00";
+    in property <bool> playing;
+    in property <bool> can-play: true;
+    in property <float> trim-start: 0;
+    in property <float> trim-end: 1;
+    in property <float> min-selection: 0.01;
+    in property <string> trim-text;
+    in property <string> trim-start-label;
+    in property <string> trim-end-label;
+    in property <bool> trimmed;
+    in property <bool> can-trim-silence;
+    in property <string> trim-silence-text: "Trim silence";
+    in property <int> format;
+    in property <[string]> sample-rates: ["44.1 kHz", "48 kHz"];
+    in property <int> sample-rate-index;
+    in property <[string]> qualities;
+    in property <int> quality-index;
+    in property <string> quality-label: "Quality";
+    in property <bool> exporting;
+    in property <float> export-progress;
+    in property <string> export-text;
+    in property <bool> unsaved: true;
+    in property <bool> prefer-copy: true;
+    in property <string> format-label: "MP3";
+    in property <NoticeData> banner;
+    in property <NoticeData> status;
+
+    callback play-pause();
+    callback seek(float);
+    callback seek-by(float);
+    callback trim(float, float);
+    callback set-trim-at-playhead(bool);
+    callback trim-silence();
+    callback reset-trim();
+    callback set-format(int);
+    callback set-sample-rate(int);
+    callback set-quality(int);
+    callback copy();
+    callback save();
+    callback discard();
+    callback banner-action();
+    callback dismiss-banner();
+    callback status-action();
+}
+
+export global AppState {
+    // 0 = recording screen, 1 = review screen
+    in property <int> screen;
+    in property <bool> close-dialog;
+    callback close-choice(int);
+    callback theme-changed(bool);
+}
+
+component CaptureScreen inherits Rectangle {
+    VerticalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-top: 16px;
+        padding-bottom: 16px;
+        spacing: 12px;
+
+        if CaptureState.recovery.visible: Banner {
+            data: CaptureState.recovery;
+            action => { CaptureState.recover(); }
+            secondary => { CaptureState.discard-recovery(); }
+        }
+
+        if CaptureState.notice.visible: Banner {
+            data: CaptureState.notice;
+            action => { CaptureState.notice-action(); }
+            dismiss => { CaptureState.dismiss-notice(); }
+        }
+
+        Card {
+            gap: 18px;
+            SourceTabs {
+                selected: CaptureState.source-kind;
+                enabled: !CaptureState.recording && !CaptureState.busy;
+                select(i) => { CaptureState.select-source(i); }
+            }
+
+            DeviceDropdown {
+                items: CaptureState.devices;
+                selected: CaptureState.selected-device;
+                icon: CaptureState.source-kind == 0 ? @image-url("icons/speaker.svg") : @image-url("icons/mic.svg");
+                enabled: !CaptureState.recording && !CaptureState.busy;
+                placeholder: CaptureState.placeholder;
+                select(i) => { CaptureState.select-device(i); }
+            }
+
+            VerticalLayout {
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    min-height: 28px;
+                    Text {
+                        text: "Level";
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: CaptureState.level-text;
+                        font-weight: 600;
+                        color: CaptureState.meter-live ? Theme.text : Theme.text-tertiary;
+                        vertical-alignment: center;
+                        min-width: 56px;
+                    }
+                    if CaptureState.clipping: Rectangle {
+                        width: clip-text.preferred-width + 10px;
+                        height: 18px;
+                        border-radius: 3px;
+                        background: Theme.meter-red;
+                        clip-text := Text {
+                            text: "CLIP";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: #ffffff;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    if CaptureState.source-kind == 1 && !CaptureState.recording: Btn {
+                        text: CaptureState.mic-testing ? "Stop test" : "Test mic";
+                        icon: CaptureState.mic-testing ? @image-url("icons/stop.svg") : @image-url("icons/mic.svg");
+                        icon-size: 14px;
+                        font-size: Theme.caption;
+                        pad: 10px;
+                        min-height: 28px;
+                        enabled: CaptureState.selected-device >= 0 && !CaptureState.busy;
+                        tooltip: "Check your microphone level without recording";
+                        clicked => { CaptureState.toggle-mic-test(); }
+                    }
+                }
+                LevelMeter {
+                    left: CaptureState.level-left;
+                    right: CaptureState.level-right;
+                    hold-left: CaptureState.hold-left;
+                    hold-right: CaptureState.hold-right;
+                    mono: CaptureState.mono;
+                    live: CaptureState.meter-live;
+                }
+                Text {
+                    text: CaptureState.format-text;
+                    font-size: Theme.caption;
+                    color: Theme.text-tertiary;
+                }
+            }
+
+            if !CaptureState.recording: Btn {
+                text: "Start recording";
+                icon: @image-url("icons/record.svg");
+                icon-size: 18px;
+                kind: BtnKind.accent;
+                font-weight: 600;
+                min-height: 52px;
+                enabled: !CaptureState.busy && CaptureState.selected-device >= 0;
+                clicked => { CaptureState.toggle-recording(); }
+            }
+            if CaptureState.recording: Btn {
+                text: "Stop recording";
+                icon: @image-url("icons/stop.svg");
+                icon-size: 16px;
+                kind: BtnKind.stop;
+                font-weight: 600;
+                min-height: 52px;
+                pad: 20px;
+                trailing: CaptureState.elapsed-text;
+                trailing-size: 20px;
+                enabled: !CaptureState.busy;
+                clicked => { CaptureState.toggle-recording(); }
+            }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 8px;
+            KeyCap { text: CaptureState.hotkey-gesture; }
+            Text {
+                text: CaptureState.hotkey-available ? "starts or stops recording from any app" : "is unavailable: another app is already using this shortcut";
+                font-size: Theme.caption;
+                color: Theme.text-secondary;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component ReviewScreen inherits Rectangle {
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(e) => {
+            if e.modifiers.control && (e.text == "c" || e.text == "C") {
+                if !ReviewState.exporting { ReviewState.copy(); }
+                return accept;
+            }
+            if e.modifiers.control && (e.text == "s" || e.text == "S") {
+                if !ReviewState.exporting { ReviewState.save(); }
+                return accept;
+            }
+            if e.modifiers.control || e.modifiers.alt {
+                return reject;
+            }
+            if e.text == " " {
+                ReviewState.play-pause();
+                return accept;
+            }
+            if e.text == Key.LeftArrow {
+                ReviewState.seek-by(-0.05);
+                return accept;
+            }
+            if e.text == Key.RightArrow {
+                ReviewState.seek-by(0.05);
+                return accept;
+            }
+            if e.text == Key.Home {
+                ReviewState.seek(ReviewState.trim-start);
+                return accept;
+            }
+            if e.text == Key.End {
+                ReviewState.seek(ReviewState.trim-end);
+                return accept;
+            }
+            if e.text == "[" {
+                ReviewState.set-trim-at-playhead(true);
+                return accept;
+            }
+            if e.text == "]" {
+                ReviewState.set-trim-at-playhead(false);
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 16px;
+            padding-bottom: 16px;
+            spacing: 12px;
+
+            if ReviewState.banner.visible: Banner {
+                data: ReviewState.banner;
+                action => { ReviewState.banner-action(); }
+                dismiss => { ReviewState.dismiss-banner(); }
+            }
+
+            Card {
+                gap: 12px;
+                VerticalLayout {
+                    spacing: 2px;
+                    Text {
+                        text: ReviewState.title;
+                        font-size: 16px;
+                        font-weight: 600;
+                        color: Theme.text;
+                    }
+                    Text {
+                        text: ReviewState.subtitle;
+                        font-size: Theme.caption;
+                        color: Theme.text-secondary;
+                        overflow: elide;
+                    }
+                }
+
+                Rectangle {
+                    height: 132px;
+                    Waveform {
+                        commands: ReviewState.waveform;
+                        buckets: ReviewState.buckets;
+                        progress: ReviewState.progress;
+                        trim-start: ReviewState.trim-start;
+                        trim-end: ReviewState.trim-end;
+                        min-selection: ReviewState.min-selection;
+                        start-label: ReviewState.trim-start-label;
+                        end-label: ReviewState.trim-end-label;
+                        enabled: !ReviewState.exporting;
+                        seek(f) => {
+                            ReviewState.seek(f);
+                            keys.focus();
+                        }
+                        trim(s, e) => {
+                            ReviewState.trim(s, e);
+                            keys.focus();
+                        }
+                    }
+                    if ReviewState.analyzing: HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        VerticalLayout {
+                            alignment: center;
+                            Spinner { }
+                        }
+                        Text {
+                            text: "Drawing waveform…";
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Btn {
+                        text: ReviewState.playing ? "Pause" : "Play";
+                        icon: ReviewState.playing ? @image-url("icons/pause.svg") : @image-url("icons/play.svg");
+                        min-width: 96px;
+                        enabled: ReviewState.can-play;
+                        shortcut: "Space";
+                        clicked => { ReviewState.play-pause(); }
+                    }
+                    Btn {
+                        text: ReviewState.trim-silence-text;
+                        icon: @image-url("icons/scissors.svg");
+                        enabled: ReviewState.can-trim-silence && !ReviewState.exporting;
+                        tooltip: "Move the handles to where the sound starts and ends";
+                        clicked => { ReviewState.trim-silence(); }
+                    }
+                    if ReviewState.trimmed: Btn {
+                        icon: @image-url("icons/reset.svg");
+                        tooltip: "Reset trim";
+                        pad: 9px;
+                        enabled: !ReviewState.exporting;
+                        clicked => { ReviewState.reset-trim(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: ReviewState.position-text;
+                            color: Theme.text;
+                            vertical-alignment: center;
+                            font-weight: 600;
+                        }
+                        Text {
+                            text: "/";
+                            color: Theme.text-tertiary;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: ReviewState.duration-text;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Text {
+                    text: ReviewState.trim-text;
+                    font-size: Theme.caption;
+                    color: Theme.text-tertiary;
+                }
+            }
+
+            Card {
+                gap: 16px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Format";
+                            font-size: Theme.caption;
+                            color: Theme.text-secondary;
+                        }
+                        Segmented {
+                            items: ["MP3", "WAV"];
+                            selected: ReviewState.format;
+                            enabled: !ReviewState.exporting;
+                            label: "Format";
+                            select(i) => { ReviewState.set-format(i); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Sample rate";
+                            font-size: Theme.caption;
+                            color: Theme.text-secondary;
+                        }
+                        Dropdown {
+                            items: ReviewState.sample-rates;
+                            selected: ReviewState.sample-rate-index;
+                            enabled: !ReviewState.exporting;
+                            label: "Sample rate";
+                            select(i) => { ReviewState.set-sample-rate(i); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: ReviewState.quality-label;
+                            font-size: Theme.caption;
+                            color: Theme.text-secondary;
+                        }
+                        Dropdown {
+                            items: ReviewState.qualities;
+                            selected: ReviewState.quality-index;
+                            enabled: !ReviewState.exporting;
+                            label: ReviewState.quality-label;
+                            select(i) => { ReviewState.set-quality(i); }
+                        }
+                    }
+                }
+
+                if ReviewState.exporting: VerticalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: ReviewState.export-text;
+                        font-size: Theme.caption;
+                        color: Theme.text-secondary;
+                    }
+                    ProgressBar { value: ReviewState.export-progress; }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    if ReviewState.unsaved: Btn {
+                        text: "Discard";
+                        icon: @image-url("icons/trash.svg");
+                        kind: BtnKind.subtle;
+                        danger: true;
+                        enabled: !ReviewState.exporting;
+                        tooltip: "Delete this recording (you can undo for 5 seconds)";
+                        clicked => { ReviewState.discard(); }
+                    }
+                    if !ReviewState.unsaved: Btn {
+                        text: "New recording";
+                        icon: @image-url("icons/plus.svg");
+                        kind: BtnKind.subtle;
+                        enabled: !ReviewState.exporting;
+                        clicked => { ReviewState.discard(); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Btn {
+                        text: "Copy " + ReviewState.format-label;
+                        icon: @image-url("icons/copy.svg");
+                        kind: ReviewState.prefer-copy ? BtnKind.accent : BtnKind.standard;
+                        shortcut: "Ctrl+C";
+                        enabled: !ReviewState.exporting;
+                        tooltip: "Copy as a file to paste into Discord, WhatsApp, Teams and other apps";
+                        clicked => { ReviewState.copy(); }
+                    }
+                    Btn {
+                        text: "Save " + ReviewState.format-label + "…";
+                        icon: @image-url("icons/save.svg");
+                        kind: ReviewState.prefer-copy ? BtnKind.standard : BtnKind.accent;
+                        shortcut: "Ctrl+S";
+                        enabled: !ReviewState.exporting;
+                        clicked => { ReviewState.save(); }
+                    }
+                }
+
+                if ReviewState.status.visible: StatusLine {
+                    data: ReviewState.status;
+                    action => { ReviewState.status-action(); }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+component CloseDialog inherits Rectangle {
+    background: Theme.scrim;
+    TouchArea { }
+    Rectangle {
+        width: min(parent.width - 48px, 420px);
+        height: dialog-layout.preferred-height;
+        background: Theme.popup-bg;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Theme.popup-stroke;
+        drop-shadow-blur: 32px;
+        drop-shadow-offset-y: 12px;
+        drop-shadow-color: #00000066;
+        clip: true;
+        dialog-layout := VerticalLayout {
+            VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                Text {
+                    text: "Save your recording before closing?";
+                    font-size: Theme.title;
+                    font-weight: 600;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "If you don't save it, the captured audio will be deleted.";
+                    color: Theme.text;
+                    wrap: word-wrap;
+                }
+            }
+            Rectangle {
+                background: Theme.window-bg;
+                HorizontalLayout {
+                    padding: 24px;
+                    padding-top: 20px;
+                    padding-bottom: 20px;
+                    spacing: 8px;
+                    Btn {
+                        text: "Save";
+                        kind: BtnKind.accent;
+                        horizontal-stretch: 1;
+                        clicked => { AppState.close-choice(0); }
+                    }
+                    Btn {
+                        text: "Don't save";
+                        horizontal-stretch: 1;
+                        clicked => { AppState.close-choice(1); }
+                    }
+                    Btn {
+                        text: "Cancel";
+                        horizontal-stretch: 1;
+                        clicked => { AppState.close-choice(2); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    in property <string> window-title: "RecordThis";
+    title: root.window-title;
+    icon: @image-url("icons/app.png");
+    preferred-width: 600px;
+    preferred-height: 580px;
+    min-width: 560px;
+    min-height: 560px;
+    background: Theme.window-bg;
+    // Overridable so the screenshot tool can use Selawik (Segoe UI's open metric twin) off Windows.
+    in property <string> font-family: "Segoe UI";
+    default-font-family: root.font-family;
+    default-font-size: Theme.body;
+
+    private property <bool> is-dark: Theme.dark;
+    changed is-dark => { AppState.theme-changed(self.is-dark); }
+
+    if AppState.screen == 0: CaptureScreen { }
+    if AppState.screen == 1: review := ReviewScreen {
+        init => { self.focus(); }
+    }
+    if AppState.close-dialog: CloseDialog { }
+}
